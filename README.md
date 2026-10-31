@@ -56,6 +56,7 @@ Translated output is cached in `~/Library/Caches/lsfg-metal/<dll hash>/`.
 - `dump --out DIR`: writes the shaders as `.dxbc` files. Keep `DIR` outside the repo.
 - `check`: builds a Metal pipeline for every translated kernel.
 - `generate PREV NEXT -o OUT.png [--multiplier N] [--flow-scale F] [--fp32] [--performance] [--runs N]`: writes the generated frame(s) between two images. With `--multiplier 3` or more it writes `OUT.1.png`, `OUT.2.png`, and so on.
+- `eval VIDEO|DIR [--start S] [--count N] [--max-width W] [--flow-scale F] [--performance] [--samples DIR]`: scores LSFG on real footage. It keeps every other frame of a 60 fps recording as the "real" 30 fps stream, generates the frame in between, and compares it with the frame the game actually rendered (PSNR and SSIM, against a blend and a repeat). `--samples` writes truth | generated | blend images.
 - `bench PREV NEXT [--frames N] [--sizes WxH,...]`: sustained benchmark across sizes, modes, flow scales and multipliers.
 
 ## Credits
