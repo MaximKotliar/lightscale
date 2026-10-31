@@ -67,7 +67,7 @@ The hook reads them when the game starts, matching on the exe name. These enviro
 | `LSFG_FLOW_SCALE` | 1.0 | Motion-estimation resolution, 0.25–1.0 |
 | `LSFG_BUFFER_MS` | 8 | Scheduling headroom: higher is smoother, lower has less lag |
 | `LSFG_TRACE=1` | off | Per-frame timing for the first frames |
-| `LSFG_LOG` | `~/Library/Logs/lsfg-metal.log` | Log file; every second it records presents, generated frames, on-screen fps, frame-time spread and drops |
+| `LSFG_LOG` | `~/Library/Logs/lsfg-metal.log` | Log file; every second it records presents, generated frames, on-screen fps, frame-time spread and drops; every 10 s the process's memory footprint |
 
 ## Limits
 
@@ -81,5 +81,5 @@ The hook reads them when the game starts, matching on the exe name. These enviro
 ## Tests
 
 - `build/bridge_test`: runs the LSFG engine under Rosetta on synthetic RGB10A2 frames.
-- `build/fake_game`: imitates D3DMetal's present pattern in a window. Load the hook with `DYLD_INSERT_LIBRARIES=$PWD/build/lsfghook.so`. `FAKE_FPS`, `FAKE_JITTER=1` and `FAKE_GPU_MS` simulate real-game conditions.
+- `build/fake_game`: imitates D3DMetal's present pattern in a window. Load the hook with `DYLD_INSERT_LIBRARIES=$PWD/build/lsfghook.so`. `FAKE_FPS`, `FAKE_JITTER=1` and `FAKE_GPU_MS` simulate real-game conditions. `FAKE_THREAD=1` renders from a plain thread, like Wine's (`FAKE_THREAD=2`: without a per-frame autorelease pool), and `FAKE_SECONDS` sets how long it runs.
 - `build/present_order`: shows which presentation patterns Core Animation drops.

@@ -26,6 +26,7 @@
 #import <Metal/Metal.h>
 #import <QuartzCore/QuartzCore.h>
 #import <dlfcn.h>
+#import <mach/mach.h>
 #import <objc/runtime.h>
 #import <os/lock.h>
 #import <pthread.h>
@@ -417,6 +418,10 @@ static void presentSlot(int slot, int generated, CFTimeInterval completedAt) {
 
 @implementation LSFGDisplayLinkTarget
 - (void)metalDisplayLink:(CAMetalDisplayLink *)link needsUpdate:(CAMetalDisplayLinkUpdate *)update {
+    @autoreleasepool { [self showFrameFor:update]; }
+}
+
+- (void)showFrameFor:(CAMetalDisplayLinkUpdate *)update {
     bump(kLinkUpdates);
     CFTimeInterval now = update.targetPresentationTimestamp, previous = atomic_exchange(&linkTarget, now);
     if (previous > 0 && now > previous && now - previous < 0.05) {
@@ -544,71 +549,89 @@ static void installPresentHooks(void) {
 
     hookAll(@selector(present), isDrawable, ^id(IMP orig) {
         return ^(id self) {
-            bump(kDrawablePresent);
-            describeDrawable(self, "drawable.present");
-            int k = atomic_fetch_add(&diagPresents, 1);
-            if (k < kDiagFrames) {
-                id<MTLCommandBuffer> cb = lastDrawableCB;
-                lsfg_log(@"diag present #%d drawable texture %p on %@; last drawable-writing cb %p status %ld",
-                         k, (__bridge void *)[(id<CAMetalDrawable>)self texture], threadName(),
-                         (__bridge void *)cb, cb ? (long)cb.status : -1L);
+            @autoreleasepool {
+                bump(kDrawablePresent);
+                describeDrawable(self, "drawable.present");
+                int k = atomic_fetch_add(&diagPresents, 1);
+                if (k < kDiagFrames) {
+                    id<MTLCommandBuffer> cb = lastDrawableCB;
+                    lsfg_log(@"diag present #%d drawable texture %p on %@; last drawable-writing cb %p status %ld",
+                             k, (__bridge void *)[(id<CAMetalDrawable>)self texture], threadName(),
+                             (__bridge void *)cb, cb ? (long)cb.status : -1L);
+                }
+                if (fgEnabled && fgPresent(self)) return;
+                if ([(id<CAMetalDrawable>)self layer] != overlay) trackPresented(self);
+                ((void (*)(id, SEL))orig)(self, @selector(present));
             }
-            if (fgEnabled && fgPresent(self)) return;
-            if ([(id<CAMetalDrawable>)self layer] != overlay) trackPresented(self);
-            ((void (*)(id, SEL))orig)(self, @selector(present));
         };
     });
     hookAll(@selector(presentAtTime:), isDrawable, ^id(IMP orig) {
         return ^(id self, CFTimeInterval t) {
-            bump(kDrawablePresentAtTime);
-            describeDrawable(self, "drawable.presentAtTime");
-            ((void (*)(id, SEL, CFTimeInterval))orig)(self, @selector(presentAtTime:), t);
+            @autoreleasepool {
+                bump(kDrawablePresentAtTime);
+                describeDrawable(self, "drawable.presentAtTime");
+                ((void (*)(id, SEL, CFTimeInterval))orig)(self, @selector(presentAtTime:), t);
+            }
         };
     });
     hookAll(@selector(presentAfterMinimumDuration:), isDrawable, ^id(IMP orig) {
         return ^(id self, CFTimeInterval d) {
-            bump(kDrawablePresentAfter);
-            describeDrawable(self, "drawable.presentAfterMinimumDuration");
-            ((void (*)(id, SEL, CFTimeInterval))orig)(self, @selector(presentAfterMinimumDuration:), d);
+            @autoreleasepool {
+                bump(kDrawablePresentAfter);
+                describeDrawable(self, "drawable.presentAfterMinimumDuration");
+                ((void (*)(id, SEL, CFTimeInterval))orig)(self, @selector(presentAfterMinimumDuration:), d);
+            }
         };
     });
     hookAll(@selector(presentDrawable:), isCommandBuffer, ^id(IMP orig) {
         return ^(id self, id d) {
-            bump(kCBPresent);
-            if (conforms(object_getClass(d), drawable)) describeDrawable(d, "cmdbuf.presentDrawable");
-            ((void (*)(id, SEL, id))orig)(self, @selector(presentDrawable:), d);
+            @autoreleasepool {
+                bump(kCBPresent);
+                if (conforms(object_getClass(d), drawable)) describeDrawable(d, "cmdbuf.presentDrawable");
+                ((void (*)(id, SEL, id))orig)(self, @selector(presentDrawable:), d);
+            }
         };
     });
     hookAll(@selector(presentDrawable:atTime:), isCommandBuffer, ^id(IMP orig) {
         return ^(id self, id d, CFTimeInterval t) {
-            bump(kCBPresentAtTime);
-            ((void (*)(id, SEL, id, CFTimeInterval))orig)(self, @selector(presentDrawable:atTime:), d, t);
+            @autoreleasepool {
+                bump(kCBPresentAtTime);
+                ((void (*)(id, SEL, id, CFTimeInterval))orig)(self, @selector(presentDrawable:atTime:), d, t);
+            }
         };
     });
     hookAll(@selector(presentDrawable:afterMinimumDuration:), isCommandBuffer, ^id(IMP orig) {
         return ^(id self, id d, CFTimeInterval t) {
-            bump(kCBPresentAfter);
-            ((void (*)(id, SEL, id, CFTimeInterval))orig)(self, @selector(presentDrawable:afterMinimumDuration:), d, t);
+            @autoreleasepool {
+                bump(kCBPresentAfter);
+                ((void (*)(id, SEL, id, CFTimeInterval))orig)(self, @selector(presentDrawable:afterMinimumDuration:), d, t);
+            }
         };
     });
     BOOL (^signals)(Class) = ^BOOL(Class c) { return conforms(c, @protocol(MTL4CommandQueue)); };
     hookAll(@selector(signalDrawable:), signals, ^id(IMP orig) {
         return ^(id self, id d) {
-            bump(kMTL4Signal);
-            if (conforms(object_getClass(d), drawable)) describeDrawable(d, "mtl4queue.signalDrawable");
-            ((void (*)(id, SEL, id))orig)(self, @selector(signalDrawable:), d);
+            @autoreleasepool {
+                bump(kMTL4Signal);
+                if (conforms(object_getClass(d), drawable)) describeDrawable(d, "mtl4queue.signalDrawable");
+                ((void (*)(id, SEL, id))orig)(self, @selector(signalDrawable:), d);
+            }
         };
     });
     hookAll(@selector(waitForDrawable:), signals, ^id(IMP orig) {
         return ^(id self, id d) {
-            bump(kMTL4Wait);
-            ((void (*)(id, SEL, id))orig)(self, @selector(waitForDrawable:), d);
+            @autoreleasepool {
+                bump(kMTL4Wait);
+                ((void (*)(id, SEL, id))orig)(self, @selector(waitForDrawable:), d);
+            }
         };
     });
     // Diagnostics: who writes the drawable.
     hookAll(@selector(renderCommandEncoderWithDescriptor:), isCommandBuffer, ^id(IMP orig) {
         return ^id(id self, MTLRenderPassDescriptor *desc) {
             id enc = ((id (*)(id, SEL, id))orig)(self, @selector(renderCommandEncoderWithDescriptor:), desc);
+            // Runs for every render pass: free what the lookups autorelease (Wine's threads never drain).
+            @autoreleasepool {
             id<MTLTexture> target = desc.colorAttachments[0].texture;
             if (fgEnabled && isDrawableTexture(target))
                 objc_setAssociatedObject(self, &kDrawableTargetKey, target, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -621,6 +644,7 @@ static void installPresentHooks(void) {
                          (unsigned long)desc.colorAttachments[0].loadAction, (unsigned long)desc.colorAttachments[0].storeAction,
                          threadName());
             }
+            }
             return enc;
         };
     });
@@ -628,68 +652,80 @@ static void installPresentHooks(void) {
         return ^id(id self) {
             id enc = ((id (*)(id, SEL))orig)(self, @selector(blitCommandEncoder));
             // Weak link back so a copy into a drawable can find its command buffer.
-            if (diagActive() && enc) objc_setAssociatedObject(enc, &kOwnerKey, self, OBJC_ASSOCIATION_ASSIGN);
+            if (diagActive() && enc) @autoreleasepool { objc_setAssociatedObject(enc, &kOwnerKey, self, OBJC_ASSOCIATION_ASSIGN); }
             return enc;
         };
     });
     hookAll(@selector(commit), isCommandBuffer, ^id(IMP orig) {
         return ^(id self) {
-            if (diagActive() && objc_getAssociatedObject(self, &kWritesDrawableKey))
-                lsfg_log(@"diag commit of drawable-writing cb %p (presents so far: %d) on %@", (__bridge void *)self,
-                         atomic_load(&diagPresents), threadName());
-            id<MTLTexture> target = fgEnabled ? objc_getAssociatedObject(self, &kDrawableTargetKey) : nil;
-            if (target) {
-                objc_setAssociatedObject(self, &kDrawableTargetKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                fgEncode(self, target);
+            @autoreleasepool {
+                if (diagActive() && objc_getAssociatedObject(self, &kWritesDrawableKey))
+                    lsfg_log(@"diag commit of drawable-writing cb %p (presents so far: %d) on %@", (__bridge void *)self,
+                             atomic_load(&diagPresents), threadName());
+                id<MTLTexture> target = fgEnabled ? objc_getAssociatedObject(self, &kDrawableTargetKey) : nil;
+                if (target) {
+                    objc_setAssociatedObject(self, &kDrawableTargetKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                    fgEncode(self, target);
+                }
+                ((void (*)(id, SEL))orig)(self, @selector(commit));
             }
-            ((void (*)(id, SEL))orig)(self, @selector(commit));
         };
     });
     Protocol *renderEncoder = @protocol(MTLRenderCommandEncoder), *blitEncoder = @protocol(MTLBlitCommandEncoder);
     Protocol *computeEncoder = @protocol(MTLComputeCommandEncoder);
     hookAll(@selector(setFragmentTexture:atIndex:), ^BOOL(Class c) { return conforms(c, renderEncoder); }, ^id(IMP orig) {
         return ^(id self, id<MTLTexture> t, NSUInteger index) {
-            if (diagActive() && objc_getAssociatedObject(self, &kWritesDrawableKey))
-                lsfg_log(@"diag drawable pass samples texture[%lu]: %@", (unsigned long)index, describeTexture(t));
-            ((void (*)(id, SEL, id, NSUInteger))orig)(self, @selector(setFragmentTexture:atIndex:), t, index);
+            @autoreleasepool {
+                if (diagActive() && objc_getAssociatedObject(self, &kWritesDrawableKey))
+                    lsfg_log(@"diag drawable pass samples texture[%lu]: %@", (unsigned long)index, describeTexture(t));
+                ((void (*)(id, SEL, id, NSUInteger))orig)(self, @selector(setFragmentTexture:atIndex:), t, index);
+            }
         };
     });
     hookAll(@selector(copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:),
             ^BOOL(Class c) { return conforms(c, blitEncoder); }, ^id(IMP orig) {
         return ^(id self, id<MTLTexture> src, NSUInteger ss, NSUInteger sl, MTLOrigin so, MTLSize sz,
                  id<MTLTexture> dst, NSUInteger ds, NSUInteger dl, MTLOrigin dor) {
-            if (diagActive() && isDrawableTexture(dst)) {
-                markOwnerWritesDrawable(self);
-                lsfg_log(@"diag blit copy into drawable from %@ (encoder %@) on %@", describeTexture(src),
-                         NSStringFromClass([self class]), threadName());
+            @autoreleasepool {
+                if (diagActive() && isDrawableTexture(dst)) {
+                    markOwnerWritesDrawable(self);
+                    lsfg_log(@"diag blit copy into drawable from %@ (encoder %@) on %@", describeTexture(src),
+                             NSStringFromClass([self class]), threadName());
+                }
+                ((void (*)(id, SEL, id, NSUInteger, NSUInteger, MTLOrigin, MTLSize, id, NSUInteger, NSUInteger, MTLOrigin))orig)(
+                    self, @selector(copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:),
+                    src, ss, sl, so, sz, dst, ds, dl, dor);
             }
-            ((void (*)(id, SEL, id, NSUInteger, NSUInteger, MTLOrigin, MTLSize, id, NSUInteger, NSUInteger, MTLOrigin))orig)(
-                self, @selector(copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:),
-                src, ss, sl, so, sz, dst, ds, dl, dor);
         };
     });
     hookAll(@selector(copyFromTexture:toTexture:), ^BOOL(Class c) { return conforms(c, blitEncoder); }, ^id(IMP orig) {
         return ^(id self, id<MTLTexture> src, id<MTLTexture> dst) {
-            if (diagActive() && isDrawableTexture(dst)) markOwnerWritesDrawable(self);
-            if (diagActive() && isDrawableTexture(dst))
-                lsfg_log(@"diag blit copy (whole) into drawable from %@ on %@", describeTexture(src), threadName());
-            ((void (*)(id, SEL, id, id))orig)(self, @selector(copyFromTexture:toTexture:), src, dst);
+            @autoreleasepool {
+                if (diagActive() && isDrawableTexture(dst)) markOwnerWritesDrawable(self);
+                if (diagActive() && isDrawableTexture(dst))
+                    lsfg_log(@"diag blit copy (whole) into drawable from %@ on %@", describeTexture(src), threadName());
+                ((void (*)(id, SEL, id, id))orig)(self, @selector(copyFromTexture:toTexture:), src, dst);
+            }
         };
     });
     hookAll(@selector(setTexture:atIndex:), ^BOOL(Class c) { return conforms(c, computeEncoder); }, ^id(IMP orig) {
         return ^(id self, id<MTLTexture> t, NSUInteger index) {
-            if (diagActive() && isDrawableTexture(t))
-                lsfg_log(@"diag compute pass binds drawable at index %lu on %@", (unsigned long)index, threadName());
-            ((void (*)(id, SEL, id, NSUInteger))orig)(self, @selector(setTexture:atIndex:), t, index);
+            @autoreleasepool {
+                if (diagActive() && isDrawableTexture(t))
+                    lsfg_log(@"diag compute pass binds drawable at index %lu on %@", (unsigned long)index, threadName());
+                ((void (*)(id, SEL, id, NSUInteger))orig)(self, @selector(setTexture:atIndex:), t, index);
+            }
         };
     });
     // MTL4 command buffers take an MTL4RenderPassDescriptor (same colorAttachments shape).
     hookAll(@selector(renderCommandEncoderWithDescriptor:), ^BOOL(Class c) { return conforms(c, @protocol(MTL4CommandBuffer)); }, ^id(IMP orig) {
         return ^id(id self, id desc) {
             id enc = ((id (*)(id, SEL, id))orig)(self, @selector(renderCommandEncoderWithDescriptor:), desc);
-            id target = [[[desc valueForKey:@"colorAttachments"] objectAtIndexedSubscript:0] valueForKey:@"texture"];
-            if (diagActive() && isDrawableTexture(target))
-                lsfg_log(@"diag MTL4 render pass into drawable: cb %@ on %@", NSStringFromClass([self class]), threadName());
+            if (diagActive()) @autoreleasepool {
+                id target = [[[desc valueForKey:@"colorAttachments"] objectAtIndexedSubscript:0] valueForKey:@"texture"];
+                if (isDrawableTexture(target))
+                    lsfg_log(@"diag MTL4 render pass into drawable: cb %@ on %@", NSStringFromClass([self class]), threadName());
+            }
             return enc;
         };
     });
@@ -729,7 +765,7 @@ static void installLayerHook(void) {
                 }
             }
             id<CAMetalDrawable> drawable = ((id (*)(id, SEL))orig)(self, @selector(nextDrawable));
-            if (--depth == 0 && drawable) {
+            if (--depth == 0 && drawable) @autoreleasepool {
                 drawableTextures[atomic_fetch_add(&drawableIndex, 1) % 8] = (__bridge void *)drawable.texture;
                 if (diagActive())
                     lsfg_log(@"diag nextDrawable -> texture %@ on %@", describeTexture(drawable.texture), threadName());
@@ -762,6 +798,14 @@ static void startStatsTimer(void) {
         shownCount = droppedCount = 0; shownSum = shownSumSq = shownMax = 0;
         os_unfair_lock_unlock(&pacingLock);
         if (line.length) lsfg_log(@"per second:%@", line);
+        // Memory every 10 s, so leaks show up in the log (same number as Activity Monitor's "Memory").
+        static int tick;
+        if (++tick % 10 == 0) {
+            task_vm_info_data_t vm;
+            mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+            if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vm, &count) == KERN_SUCCESS)
+                lsfg_log(@"memory: footprint %llu MB", vm.phys_footprint >> 20);
+        }
     });
     dispatch_resume(timer);
 }

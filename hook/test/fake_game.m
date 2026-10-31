@@ -6,6 +6,12 @@
 #import <Metal/Metal.h>
 #import <QuartzCore/QuartzCore.h>
 #import <math.h>
+#import <pthread.h>
+
+static void *threadMain(void *block) {
+    ((__bridge void (^)(void))block)();
+    return NULL;
+}
 
 int main(void) {
     @autoreleasepool {
@@ -37,7 +43,9 @@ int main(void) {
         CFTimeInterval start = CACurrentMediaTime();
         // FAKE_JITTER=1: frame times vary 28-38 ms like a real game instead of a steady 33.3.
         BOOL jitter = getenv("FAKE_JITTER") != NULL;
-        [NSTimer scheduledTimerWithTimeInterval:1.0 / (getenv("FAKE_FPS") ? atof(getenv("FAKE_FPS")) : 30) repeats:YES block:^(NSTimer *t) {
+        double fps = getenv("FAKE_FPS") ? atof(getenv("FAKE_FPS")) : 30;
+        double seconds = getenv("FAKE_SECONDS") ? atof(getenv("FAKE_SECONDS")) : 6;
+        void (^renderFrame)(void) = ^{
             if (jitter) usleep(arc4random_uniform(10000));
             id<CAMetalDrawable> d = [layer nextDrawable];
             if (!d) return;
@@ -65,8 +73,30 @@ int main(void) {
             [[cb renderCommandEncoderWithDescriptor:rp] endEncoding];
             [cb commit];
             [d present];
-            if (CACurrentMediaTime() - start > (getenv("FAKE_SECONDS") ? atof(getenv("FAKE_SECONDS")) : 6)) { [t invalidate]; [NSApp terminate:nil]; }
-        }];
+        };
+        if (getenv("FAKE_THREAD")) {
+            // FAKE_THREAD=1: render from a plain thread (like the game's threads under Wine), where only
+            // the pool the game drains each frame frees autoreleased objects.
+            static void (^loop)(void);
+            loop = ^{
+                while (CACurrentMediaTime() - start < seconds) {
+                    CFTimeInterval t0 = CACurrentMediaTime();
+                    // Like a real engine: a pool per frame. FAKE_THREAD=2 skips it (nothing is ever freed).
+                    if (getenv("FAKE_THREAD")[0] == '2') renderFrame();
+                    else @autoreleasepool { renderFrame(); }
+                    double left = 1.0 / fps - (CACurrentMediaTime() - t0);
+                    if (left > 0) usleep((useconds_t)(left * 1e6));
+                }
+                dispatch_async(dispatch_get_main_queue(), ^{ [NSApp terminate:nil]; });
+            };
+            pthread_t thread;
+            pthread_create(&thread, NULL, threadMain, (__bridge void *)loop);
+        } else {
+            [NSTimer scheduledTimerWithTimeInterval:1.0 / fps repeats:YES block:^(NSTimer *t) {
+                renderFrame();
+                if (CACurrentMediaTime() - start > seconds) { [t invalidate]; [NSApp terminate:nil]; }
+            }];
+        }
         [NSApp run];
     }
     return 0;
