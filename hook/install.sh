@@ -6,7 +6,8 @@
 #   hook/install.sh --uninstall (same arguments)
 #
 # What it changes (all reversible with --uninstall):
-#   1. ~/Library/Application Support/lsfg-metal/wine/x86_64-windows/  lsfghook.dll + lsfghook.so
+#   1. ~/Library/Application Support/lsfg-metal/wine/x86_64-windows/  lsfghook.dll, lsfghook.so,
+#      liblsfgbridge.dylib (the LSFG engine; shaders come from your Lossless.dll at runtime)
 #   2. <bottle>/cxbottle.conf   [Wine] "LibPath" adds that folder to Wine's builtin DLL search path
 #                               (backup: cxbottle.conf.lsfg-backup)
 #   3. <bottle>/drive_c/windows/system32/lsfghook.dll   Wine placeholder for the builtin
@@ -85,7 +86,7 @@ if [ -e "$game_dir/$proxy.dll" ] && ! is_our_proxy "$game_dir/$proxy.dll"; then
 fi
 
 mkdir -p "$ROOT/wine/x86_64-windows"
-cp "$BUILD/lsfghook.dll" "$BUILD/lsfghook.so" "$ROOT/wine/x86_64-windows/"
+cp "$BUILD/lsfghook.dll" "$BUILD/lsfghook.so" "$BUILD/liblsfgbridge.dylib" "$ROOT/wine/x86_64-windows/"
 echo "installed hook to $ROOT"
 
 if ! grep -q "$BEGIN" "$conf"; then

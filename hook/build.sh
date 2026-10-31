@@ -42,4 +42,9 @@ clang -arch x86_64 -dynamiclib -O2 -Wall -fobjc-arc -mmacosx-version-min=14.0 \
     -framework Foundation -framework Metal -framework QuartzCore \
     -o "$OUT/lsfghook.so" unix/lsfghook_unix.m
 codesign -s - -f "$OUT/lsfghook.so" 2>/dev/null
+
+# LSFG engine for the hook: the Swift package's C API, built for x86_64 like wineloader.
+(cd .. && swift build -c release --arch x86_64 --product LSFGBridge >/dev/null)
+cp "$(cd .. && swift build -c release --arch x86_64 --product LSFGBridge --show-bin-path)/libLSFGBridge.dylib" "$OUT/liblsfgbridge.dylib"
+codesign -s - -f "$OUT/liblsfgbridge.dylib" 2>/dev/null
 echo "built: $(ls "$OUT" | grep -v obj | tr '\n' ' ')"

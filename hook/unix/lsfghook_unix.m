@@ -2,11 +2,20 @@
 //
 // Wine dlopen()s this library when lsfghook.dll (the PE side) asks for its Unix
 // functions, so this code runs inside the game process, next to D3DMetal.
-// Stage 1: observe how the game presents frames. Nothing is changed yet.
+//
+// How frames are inserted (D3DMetal, seen in Witcher 3): each real frame is drawn into a
+// drawable by one render pass, its command buffer is committed, then -present is called.
+// In the commit hook we append to that same command buffer: copy the drawable into LSFG,
+// run LSFG, copy the generated frame into a second drawable. In the present hook we show
+// the generated drawable, then the real one, each half a real-frame interval apart.
 //
 // Switches (environment):
-//   LSFG_ENABLE=0   load but install no hooks
-//   LSFG_LOG=path   log file (default ~/Library/Logs/lsfg-metal.log)
+//   LSFG_ENABLE=0        load but install no hooks
+//   LSFG_FG=0            observe only, no frame generation (default: on)
+//   LSFG_FLOW_SCALE=F    motion-estimation resolution, 0.25-1.0 (default 1.0)
+//   LSFG_PERFORMANCE=0   use LSFG quality mode (default: performance mode)
+//   LSFG_READABLE=0      leave framebufferOnly alone (disables frame generation)
+//   LSFG_LOG=path        log file (default ~/Library/Logs/lsfg-metal.log)
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -15,6 +24,7 @@
 #import <objc/runtime.h>
 #import <os/lock.h>
 #import <pthread.h>
+#import <math.h>
 #import <stdatomic.h>
 
 #pragma mark - Logging
@@ -42,12 +52,12 @@ static void lsfg_log(NSString *fmt, ...) {
 typedef enum {
     kDrawablePresent, kDrawablePresentAtTime, kDrawablePresentAfter,
     kCBPresent, kCBPresentAtTime, kCBPresentAfter,
-    kMTL4Signal, kMTL4Wait, kNextDrawable, kCounterCount
+    kMTL4Signal, kMTL4Wait, kNextDrawable, kGenerated, kCounterCount
 } Counter;
 static const char *counterNames[kCounterCount] = {
     "drawable.present", "drawable.presentAtTime", "drawable.presentAfterMinimumDuration",
     "cmdbuf.presentDrawable", "cmdbuf.presentDrawable:atTime", "cmdbuf.presentDrawable:afterMinimumDuration",
-    "mtl4queue.signalDrawable", "mtl4queue.waitForDrawable", "layer.nextDrawable",
+    "mtl4queue.signalDrawable", "mtl4queue.waitForDrawable", "layer.nextDrawable", "generated",
 };
 static _Atomic long counters[kCounterCount];
 static _Atomic bool describedLayer;
@@ -144,6 +154,162 @@ static NSString *threadName(void) {
     return [NSString stringWithFormat:@"%s/%p", name[0] ? name : "?", (void *)pthread_self()];
 }
 
+#pragma mark - Frame generation
+
+typedef void *(*bridge_create_fn)(const void *, int, int, unsigned, int, float, int, char *, int);
+typedef const void *(*bridge_texture_fn)(void *);
+typedef int (*bridge_encode_fn)(void *, const void *);
+typedef const void *(*bridge_output_fn)(void *, int);
+static struct {
+    bridge_create_fn create;
+    bridge_texture_fn input;
+    bridge_encode_fn encode;
+    bridge_output_fn output;
+} bridge;
+
+static BOOL fgEnabled;
+static _Atomic int fgState;            // 0 idle, 1 creating, 2 ready, -1 failed
+static void *fgContext;
+static NSUInteger fgWidth, fgHeight;
+static MTLPixelFormat fgFormat;
+static __weak CAMetalLayer *fgLayer;   // layer the game's drawables come from
+static char kDrawableTargetKey;        // command buffer -> drawable texture it renders into
+static os_unfair_lock pendingLock = OS_UNFAIR_LOCK_INIT;
+static NSMutableDictionary<NSNumber *, id<CAMetalDrawable>> *pending; // real drawable texture -> generated drawable
+static CFTimeInterval lastRealPresent, realInterval;
+
+// Pacing as the display saw it: intervals between consecutive on-screen frames.
+static os_unfair_lock pacingLock = OS_UNFAIR_LOCK_INIT;
+static CFTimeInterval lastShown;
+static int shownCount, droppedCount;
+static double shownSum, shownSumSq, shownMax;
+
+static void trackPresented(id<CAMetalDrawable> d) {
+    [d addPresentedHandler:^(id<MTLDrawable> drawable) {
+        CFTimeInterval t = drawable.presentedTime;
+        os_unfair_lock_lock(&pacingLock);
+        if (t == 0) droppedCount++;
+        else {
+            if (lastShown > 0 && t > lastShown && t - lastShown < 0.25) {
+                double dt = (t - lastShown) * 1000;
+                shownCount++; shownSum += dt; shownSumSq += dt * dt; shownMax = MAX(shownMax, dt);
+            }
+            lastShown = t;
+        }
+        os_unfair_lock_unlock(&pacingLock);
+    }];
+}
+
+static BOOL envOn(const char *name, BOOL fallback) {
+    const char *v = getenv(name);
+    return v ? v[0] != '0' : fallback;
+}
+static float envFloat(const char *name, float fallback) {
+    const char *v = getenv(name);
+    return v ? (float)atof(v) : fallback;
+}
+
+static BOOL loadBridge(void) {
+    Dl_info info = {0};
+    dladdr((void *)loadBridge, &info);
+    NSString *path = [[@(info.dli_fname ?: ".") stringByDeletingLastPathComponent]
+                      stringByAppendingPathComponent:@"liblsfgbridge.dylib"];
+    void *lib = dlopen(path.fileSystemRepresentation, RTLD_NOW | RTLD_LOCAL);
+    if (!lib) { lsfg_log(@"frame generation off: cannot load %@: %s", path, dlerror()); return NO; }
+    bridge.create = (bridge_create_fn)dlsym(lib, "lsfg_bridge_create");
+    bridge.input = (bridge_texture_fn)dlsym(lib, "lsfg_bridge_input");
+    bridge.encode = (bridge_encode_fn)dlsym(lib, "lsfg_bridge_encode");
+    bridge.output = (bridge_output_fn)dlsym(lib, "lsfg_bridge_output");
+    return bridge.create && bridge.input && bridge.encode && bridge.output;
+}
+
+// Builds the LSFG context in the background (pipelines can take a moment).
+static void fgCreateContext(id<MTLDevice> device, id<MTLTexture> frame) {
+    int expected = 0;
+    if (!atomic_compare_exchange_strong(&fgState, &expected, 1)) return;
+    NSUInteger w = frame.width, h = frame.height;
+    MTLPixelFormat format = frame.pixelFormat;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        char error[512] = {0};
+        float flow = envFloat("LSFG_FLOW_SCALE", 1.0f);
+        BOOL perf = envOn("LSFG_PERFORMANCE", YES);
+        CFTimeInterval t0 = CACurrentMediaTime();
+        void *ctx = bridge.create((__bridge const void *)device, (int)w, (int)h, (unsigned)format, 2, flow, perf, error, sizeof error);
+        if (!ctx) {
+            lsfg_log(@"frame generation off: %s", error);
+            atomic_store(&fgState, -1);
+            return;
+        }
+        fgContext = ctx;
+        fgWidth = w; fgHeight = h; fgFormat = format;
+        atomic_store(&fgState, 2);
+        lsfg_log(@"frame generation ready: %lux%lu fmt %lu, flow %.2f, %s mode, built in %.2fs", (unsigned long)w,
+                 (unsigned long)h, (unsigned long)format, flow, perf ? "performance" : "quality", CACurrentMediaTime() - t0);
+    });
+}
+
+// Commit hook, for the command buffer that renders a real frame into drawable texture `target`.
+static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target) {
+    NSNumber *key = @((uintptr_t)(__bridge void *)target);
+    os_unfair_lock_lock(&pendingLock);
+    [pending removeObjectForKey:key]; // never show a stale generated frame for this drawable
+    os_unfair_lock_unlock(&pendingLock);
+
+    int state = atomic_load(&fgState);
+    if (state == 0) fgCreateContext(cb.device, target);
+    if (state != 2) return;
+    if (target.width != fgWidth || target.height != fgHeight || target.pixelFormat != fgFormat) {
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{ lsfg_log(@"frame size or format changed; frame generation paused (restart the game)"); });
+        return;
+    }
+    id<MTLTexture> input = (__bridge id<MTLTexture>)bridge.input(fgContext);
+    id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+    [blit copyFromTexture:target toTexture:input];
+    [blit endEncoding];
+    if (bridge.encode(fgContext, (__bridge const void *)cb) <= 0) return; // history still filling
+
+    CAMetalLayer *layer = fgLayer;
+    id<CAMetalDrawable> extra = layer ? [layer nextDrawable] : nil;
+    if (!extra || extra.texture.width != fgWidth || extra.texture.height != fgHeight) return;
+    blit = [cb blitCommandEncoder];
+    [blit copyFromTexture:(__bridge id<MTLTexture>)bridge.output(fgContext, 0) toTexture:extra.texture];
+    [blit endEncoding];
+    os_unfair_lock_lock(&pendingLock);
+    pending[key] = extra;
+    os_unfair_lock_unlock(&pendingLock);
+}
+
+// Present hook for a real drawable. Returns YES if it presented the generated frame and the
+// real one itself, paced half a real-frame interval apart.
+static BOOL fgPresent(id<CAMetalDrawable> real) {
+    CFTimeInterval now = CACurrentMediaTime();
+    if (lastRealPresent > 0) {
+        CFTimeInterval dt = now - lastRealPresent;
+        if (dt < 0.25) realInterval = realInterval > 0 ? realInterval * 0.9 + dt * 0.1 : dt;
+    }
+    lastRealPresent = now;
+
+    NSNumber *key = @((uintptr_t)(__bridge void *)real.texture);
+    os_unfair_lock_lock(&pendingLock);
+    id<CAMetalDrawable> extra = pending[key];
+    [pending removeObjectForKey:key];
+    os_unfair_lock_unlock(&pendingLock);
+    if (!extra) return NO;
+
+    // Space frames slightly under half a real interval. The display rounds a minimum
+    // duration up to whole refreshes, so exactly half (16.7 ms = 2 refreshes at 120 Hz)
+    // often becomes 3; frames then queue up, the game blocks for drawables, the measured
+    // interval grows, and pacing locks in too slow. The margin keeps the queue draining.
+    CFTimeInterval half = MIN(MAX(realInterval / 2 - 0.002, 0.004), 0.05);
+    trackPresented(extra);
+    trackPresented(real);
+    [extra presentAfterMinimumDuration:half];
+    [real presentAfterMinimumDuration:half];
+    bump(kGenerated);
+    return YES;
+}
+
 #pragma mark - Hooks
 
 static void installPresentHooks(void) {
@@ -162,6 +328,7 @@ static void installPresentHooks(void) {
                          k, (__bridge void *)[(id<CAMetalDrawable>)self texture], threadName(),
                          (__bridge void *)cb, cb ? (long)cb.status : -1L);
             }
+            if (fgEnabled && fgPresent(self)) return;
             ((void (*)(id, SEL))orig)(self, @selector(present));
         };
     });
@@ -216,7 +383,10 @@ static void installPresentHooks(void) {
     hookAll(@selector(renderCommandEncoderWithDescriptor:), isCommandBuffer, ^id(IMP orig) {
         return ^id(id self, MTLRenderPassDescriptor *desc) {
             id enc = ((id (*)(id, SEL, id))orig)(self, @selector(renderCommandEncoderWithDescriptor:), desc);
-            if (diagActive() && isDrawableTexture(desc.colorAttachments[0].texture)) {
+            id<MTLTexture> target = desc.colorAttachments[0].texture;
+            if (fgEnabled && isDrawableTexture(target))
+                objc_setAssociatedObject(self, &kDrawableTargetKey, target, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            if (diagActive() && isDrawableTexture(target)) {
                 objc_setAssociatedObject(self, &kWritesDrawableKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                 lastDrawableCB = self;
                 if (enc) objc_setAssociatedObject(enc, &kWritesDrawableKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -241,6 +411,11 @@ static void installPresentHooks(void) {
             if (diagActive() && objc_getAssociatedObject(self, &kWritesDrawableKey))
                 lsfg_log(@"diag commit of drawable-writing cb %p (presents so far: %d) on %@", (__bridge void *)self,
                          atomic_load(&diagPresents), threadName());
+            id<MTLTexture> target = fgEnabled ? objc_getAssociatedObject(self, &kDrawableTargetKey) : nil;
+            if (target) {
+                objc_setAssociatedObject(self, &kDrawableTargetKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                fgEncode(self, target);
+            }
             ((void (*)(id, SEL))orig)(self, @selector(commit));
         };
     });
@@ -316,6 +491,7 @@ static void installLayerHook(void) {
                 bump(kNextDrawable);
                 // Frame generation must read the drawable; framebufferOnly forbids that.
                 CAMetalLayer *layer = self;
+                fgLayer = layer;
                 if (layer.framebufferOnly && !(getenv("LSFG_READABLE") && getenv("LSFG_READABLE")[0] == '0')) {
                     layer.framebufferOnly = NO;
                     lsfg_log(@"set framebufferOnly = NO on %@ %p", NSStringFromClass([self class]), (__bridge void *)self);
@@ -344,6 +520,14 @@ static void startStatsTimer(void) {
             long n = atomic_exchange(&counters[i], 0);
             if (n) [line appendFormat:@" %s=%ld", counterNames[i], n];
         }
+        os_unfair_lock_lock(&pacingLock);
+        if (shownCount > 1) {
+            double mean = shownSum / shownCount, sd = sqrt(MAX(0, shownSumSq / shownCount - mean * mean));
+            [line appendFormat:@" | on screen %d fps, interval %.1f ms ±%.1f, max %.1f, dropped %d",
+                               shownCount + 1, mean, sd, shownMax, droppedCount];
+        }
+        shownCount = droppedCount = 0; shownSum = shownSumSq = shownMax = 0;
+        os_unfair_lock_unlock(&pacingLock);
         if (line.length) lsfg_log(@"per second:%@", line);
     });
     dispatch_resume(timer);
@@ -357,6 +541,9 @@ __attribute__((constructor)) static void lsfg_unix_init(void) {
                  NSProcessInfo.processInfo.arguments.firstObject ?: @"?", info.dli_fname ?: "?");
         const char *enable = getenv("LSFG_ENABLE");
         if (enable && enable[0] == '0') { lsfg_log(@"LSFG_ENABLE=0, no hooks installed"); return; }
+        fgEnabled = envOn("LSFG_FG", YES) && envOn("LSFG_READABLE", YES) && loadBridge();
+        pending = [NSMutableDictionary dictionary];
+        lsfg_log(@"frame generation %s", fgEnabled ? "on" : "off");
         installLayerHook();
         startStatsTimer();
     }
