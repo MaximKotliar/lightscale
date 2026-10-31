@@ -115,7 +115,7 @@ private struct CheckRow: View {
             fix
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.vertical, 8)
     }
 
     @ViewBuilder private var fix: some View {
