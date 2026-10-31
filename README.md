@@ -22,6 +22,7 @@ Only for people who own [Lossless Scaling on Steam](https://store.steampowered.c
 | CrossOver hook: injection, D3DMetal present path, frame insertion ([hook/README.md](hook/README.md)) | working: Witcher 3, 30 → 60 fps on screen |
 | Setup app: checks, shader translation, install into games, settings, live stats | done |
 | Kernel optimization: concurrent pass scheduling, 10–25% faster, identical output | done |
+| Pre-baked kernels with weights from the user's DLL; app redesign with per-game profiles | done |
 | 3×/4× in the hook, HUD handling, more games | next |
 
 First results on an M4 Max (synthetic pair: photo panned 16 px plus a disc moving 120 px):
@@ -36,14 +37,24 @@ Sustained GPU cost per real frame at 2× on an M4 Max: 0.4–2.0 ms at 1080p–1
 
 ## App
 
-`scripts/build-app.sh` builds **LSFG Metal.app** (`build/LSFG Metal.app`), which does the whole setup without Terminal:
+`scripts/build-app.sh` builds **LSFG Metal.app** (`build/LSFG Metal.app`):
 
-- **Setup:** checks the Apple GPU, CrossOver, your Steam copy of Lossless Scaling, `spirv-cross` and the Metal compiler. It translates the LSFG shaders from your `Lossless.dll` with one click.
-- **Games:** lists Steam games in every CrossOver bottle (plus any `.exe` you add) and picks the right proxy DLL from each game's imports. It refuses games with anti-cheat, 32-bit games, and folders where another mod already uses the proxy name. Install and Remove do what `hook/install.sh` does.
-- **Settings:** frame generation on or off, performance or quality mode, motion detail (flow scale) and pacing buffer, per bottle.
-- **Live:** game fps → on-screen fps, frame time, drops and a 60-second chart, read from the hook's log.
+- **First launch:** a one-time setup checklist (Apple silicon, CrossOver, your Steam copy of Lossless Scaling, the frame-generation kernels, the game hook). After that, setup only reappears as a small banner if something breaks, for example after a Lossless Scaling update. **Check Setup…** (⇧⌘,) opens it any time.
+- **Games:** Steam games from every CrossOver bottle, plus any `.exe` you add. Install picks the right proxy DLL from the game's imports. Games with anti-cheat, 32-bit games, and folders where another mod uses the proxy name are explained and left alone.
+- **Per-game profiles:** frame generation on or off, performance or quality mode, motion detail and pacing buffer for each game. They're stored in `~/Library/Application Support/lsfg-metal/profiles.json` and read by the hook when the game starts.
+- **Now Playing:** while a hooked game runs, its page shows game fps → on-screen fps, frame time and a 60-second chart.
 
-The app isn't sandboxed, because it edits CrossOver bottles and runs CrossOver's `wine`, `spirv-cross` and Apple's `metal`. It's built with the hardened runtime and no extra entitlements.
+The app isn't sandboxed, because it edits CrossOver bottles and runs CrossOver's `wine`. It's built with the hardened runtime and no extra entitlements.
+
+### Pre-baked kernels, weights from your DLL
+
+`lsfg-metal bake --out DIR` compiles every LSFG 3.1 shader once with all floating-point constants (the weights) lifted out into zeroed Metal function constants. The resulting `lsfg-skeleton.metallib` plus `manifest.json` (a structure hash per kernel) contain no weights. At runtime the engine reads the constants from the user's own `Lossless.dll`, checks each shader's structure hash, and specializes the pipelines with `MTLFunctionConstantValues`:
+
+- **Same speed** as locally translated kernels (within ±3%). Rounding differs by at most 1/255.
+- **Fast startup:** about 0.3 s cold, about 0.07 s once Metal has cached the pipelines.
+- **No developer tools for users:** they don't need `spirv-cross` or Xcode. Only if a Lossless Scaling update changes a shader's structure does the app fall back to a one-time local build.
+
+`scripts/build-app.sh` bakes into the app bundle when it finds a `Lossless.dll`. The skeleton contains no weights, but it's still a translation of Lossless Scaling's shader code, so it's kept out of git. Distributing an app bundle that contains it is a separate decision.
 
 ## Setup (command line)
 

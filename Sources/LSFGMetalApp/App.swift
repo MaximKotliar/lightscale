@@ -8,22 +8,24 @@ struct LSFGMetalApp: App {
     init() {
         // Started from Terminal (swift run) the process isn't a bundled app yet: make it a regular one.
         NSApplication.shared.setActivationPolicy(.regular)
-        // `--section games` opens a given screen (handy for screenshots and docs).
         let model = AppModel()
-        let args = CommandLine.arguments
-        if let i = args.firstIndex(of: "--section"), i + 1 < args.count,
-           let section = AppModel.Section.allCases.first(where: { $0.rawValue.lowercased() == args[i + 1].lowercased() }) {
-            model.section = section
-        }
+        // `--onboarding` shows first-launch setup again (handy for screenshots and docs).
+        if CommandLine.arguments.contains("--onboarding") { model.hasCompletedSetup = false }
         _model = State(initialValue: model)
     }
 
     var body: some Scene {
         Window("LSFG Metal", id: "main") {
             ContentView(model: model)
-                .frame(minWidth: 680, minHeight: 440)
+                .frame(minWidth: 720, minHeight: 480)
         }
-        .defaultSize(width: 760, height: 500)
+        .defaultSize(width: 860, height: 560)
         .windowResizability(.contentMinSize)
+        .commands {
+            CommandGroup(after: .appSettings) {
+                Button("Check Setup…") { model.showingSetup = true }
+                    .keyboardShortcut(",", modifiers: [.command, .shift])
+            }
+        }
     }
 }

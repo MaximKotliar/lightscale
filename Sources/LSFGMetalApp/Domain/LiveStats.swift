@@ -19,20 +19,35 @@ enum LiveStats {
         FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Logs/lsfg-metal.log")
     }
 
-    /// The last `count` per-second samples, and when the log was last written.
-    static func read(count: Int = 60) -> (samples: [LiveSample], modified: Date?) {
+    /// What the hook is measuring right now: the game it runs in and its last samples.
+    struct Snapshot: Sendable {
+        var process: String?
+        var samples: [LiveSample] = []
+        var modified: Date?
+
+        /// The hook wrote within the last few seconds, i.e. a game is running.
+        var isLive: Bool { (modified.map { -$0.timeIntervalSinceNow } ?? .infinity) < 3 && !samples.isEmpty }
+    }
+
+    /// The last `count` per-second samples of the most recent game.
+    static func read(count: Int = 60) -> Snapshot {
         let url = logURL
         let modified = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return ([], modified) }
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return Snapshot(modified: modified) }
         defer { try? handle.close() }
         let size = (try? handle.seekToEnd()) ?? 0
         try? handle.seek(toOffset: size > 64_000 ? size - 64_000 : 0)
         let text = String(decoding: (try? handle.readToEnd()) ?? Data(), as: UTF8.self)
-        let samples = text.split(separator: "\n").compactMap(parse)
-        guard let lastPID = samples.last?.pid else { return ([], modified) }
-        return (Array(samples.filter { $0.pid == lastPID }.suffix(count)), modified)
+        let lines = text.split(separator: "\n")
+        let samples = lines.compactMap(parse)
+        guard let lastPID = samples.last?.pid else { return Snapshot(modified: modified) }
+        let process = lines.lazy.compactMap { $0.firstMatch(of: loaded) }.last { Int($0.pid) == lastPID }.map { String($0.name) }
+        return Snapshot(process: process, samples: Array(samples.filter { $0.pid == lastPID }.suffix(count)), modified: modified)
     }
 
+    private static var loaded: Regex<(Substring, pid: Substring, name: Substring)> {
+        /pid (?<pid>\d+)\] lsfghook loaded in (?<name>\S+)[ ]/
+    }
     private static var line: Regex<(Substring, t: Substring, pid: Substring, rest: Substring)> {
         /\[(?<t>[\d.]+) pid (?<pid>\d+)\] per second:(?<rest>.*)/
     }

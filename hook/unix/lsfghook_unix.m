@@ -9,7 +9,9 @@
 // run LSFG, copy the generated frame into a second drawable. In the present hook we show
 // the generated drawable, then the real one, each half a real-frame interval apart.
 //
-// Switches (environment):
+// Settings come from the game's profile in ~/Library/Application Support/lsfg-metal/profiles.json
+// (written by LSFG Metal.app): {"default": {...}, "games": {"witcher3.exe": {...}}} with keys
+// enabled, performance, flowScale, bufferMs. Environment variables override them:
 //   LSFG_ENABLE=0        load but install no hooks
 //   LSFG_FG=0            observe only, no frame generation (default: on)
 //   LSFG_FLOW_SCALE=F    motion-estimation resolution, 0.25-1.0 (default 1.0)
@@ -217,13 +219,41 @@ static void trackPresented(id<CAMetalDrawable> d) {
     }];
 }
 
+// The effective settings for this game: defaults, then profiles.json, then environment.
+static struct { BOOL enabled, performance; float flowScale, bufferMs; } config = { YES, YES, 1.0f, 8.0f };
+
+static void applyProfile(NSDictionary *p) {
+    if (![p isKindOfClass:NSDictionary.class]) return;
+    if ([p[@"enabled"] isKindOfClass:NSNumber.class]) config.enabled = [p[@"enabled"] boolValue];
+    if ([p[@"performance"] isKindOfClass:NSNumber.class]) config.performance = [p[@"performance"] boolValue];
+    if ([p[@"flowScale"] isKindOfClass:NSNumber.class]) config.flowScale = [p[@"flowScale"] floatValue];
+    if ([p[@"bufferMs"] isKindOfClass:NSNumber.class]) config.bufferMs = [p[@"bufferMs"] floatValue];
+}
+
+static void loadConfig(void) {
+    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/lsfg-metal/profiles.json"];
+    NSData *data = [NSData dataWithContentsOfFile:path];
+    NSDictionary *root = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    NSString *exe = NSProcessInfo.processInfo.processName.lowercaseString;
+    if ([root isKindOfClass:NSDictionary.class]) {
+        applyProfile(root[@"default"]);
+        NSDictionary *games = root[@"games"];
+        if ([games isKindOfClass:NSDictionary.class]) applyProfile(games[exe]);
+    }
+    const char *v;
+    if ((v = getenv("LSFG_FG"))) config.enabled = v[0] != '0';
+    if ((v = getenv("LSFG_PERFORMANCE"))) config.performance = v[0] != '0';
+    if ((v = getenv("LSFG_FLOW_SCALE"))) config.flowScale = (float)atof(v);
+    if ((v = getenv("LSFG_BUFFER_MS"))) config.bufferMs = (float)atof(v);
+    config.flowScale = fminf(fmaxf(config.flowScale, 0.25f), 1.0f);
+    config.bufferMs = fminf(fmaxf(config.bufferMs, 0.0f), 50.0f);
+    lsfg_log(@"profile for %@: frame generation %s, %s mode, flow %.2f, buffer %.0f ms", exe, config.enabled ? "on" : "off",
+             config.performance ? "performance" : "quality", config.flowScale, config.bufferMs);
+}
+
 static BOOL envOn(const char *name, BOOL fallback) {
     const char *v = getenv(name);
     return v ? v[0] != '0' : fallback;
-}
-static float envFloat(const char *name, float fallback) {
-    const char *v = getenv(name);
-    return v ? (float)atof(v) : fallback;
 }
 
 static BOOL loadBridge(void) {
@@ -248,8 +278,8 @@ static void fgCreateContext(id<MTLDevice> device, id<MTLTexture> frame) {
     MTLPixelFormat format = frame.pixelFormat;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         char error[512] = {0};
-        float flow = envFloat("LSFG_FLOW_SCALE", 1.0f);
-        BOOL perf = envOn("LSFG_PERFORMANCE", YES);
+        float flow = config.flowScale;
+        BOOL perf = config.performance;
         CFTimeInterval t0 = CACurrentMediaTime();
         void *ctx = bridge.create((__bridge const void *)device, (int)w, (int)h, (unsigned)format, 2, flow, perf, error, sizeof error);
         if (!ctx) {
@@ -319,7 +349,7 @@ static void presentSlot(int slot, BOOL hasGenerated, CFTimeInterval completedAt)
     // Scheduling a little ahead absorbs the game's frame-time jitter (and gives the compositor
     // time): frames that arrive up to `buffer` late still land on the cadence.
     static double buffer = -1;
-    if (buffer < 0) buffer = envFloat("LSFG_BUFFER_MS", 8) / 1000.0;
+    if (buffer < 0) buffer = config.bufferMs / 1000.0;
     CFTimeInterval earliest = CACurrentMediaTime() + 0.003;
     CFTimeInterval step = hasGenerated ? half : period;
     CFTimeInterval first = lastRealTarget > 0 ? lastRealTarget + step : earliest;
@@ -653,7 +683,8 @@ __attribute__((constructor)) static void lsfg_unix_init(void) {
                  NSProcessInfo.processInfo.arguments.firstObject ?: @"?", info.dli_fname ?: "?");
         const char *enable = getenv("LSFG_ENABLE");
         if (enable && enable[0] == '0') { lsfg_log(@"LSFG_ENABLE=0, no hooks installed"); return; }
-        fgEnabled = envOn("LSFG_FG", YES) && envOn("LSFG_READABLE", YES) && loadBridge();
+        loadConfig();
+        fgEnabled = config.enabled && envOn("LSFG_READABLE", YES) && loadBridge();
         captured = [NSMutableSet set];
         lsfg_log(@"frame generation %s", fgEnabled ? "on" : "off");
         installLayerHook();

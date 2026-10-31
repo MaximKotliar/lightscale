@@ -11,13 +11,24 @@ import Testing
     try original.write(to: url, atomically: true, encoding: .utf8)
 
     let conf = BottleConf(url: url)
-    try conf.setBlock("lsfg-metal", section: "Wine", lines: ["\"LibPath\" = \"x\""])          // new section
-    try FrameGenSettings(enabled: false, performance: false, flowScale: 0.5, bufferMs: 12)
-        .save(to: Bottle(url: dir))                                                            // existing section
-    #expect(FrameGenSettings.load(Bottle(url: dir)) == FrameGenSettings(enabled: false, performance: false, flowScale: 0.5, bufferMs: 12))
+    try conf.setBlock("lsfg-metal", section: "Wine", lines: ["\"LibPath\" = \"x\""])   // new section
+    try conf.setBlock("other", section: "EnvironmentVariables", lines: ["\"A\" = \"1\""]) // existing section
+    #expect(conf.blockLines("other") == ["\"A\" = \"1\""])
     try conf.removeBlock("lsfg-metal")
-    try conf.removeBlock(FrameGenSettings.marker)
+    try conf.removeBlock("other")
     #expect(try String(contentsOf: url, encoding: .utf8) == original)
+}
+
+@Test func profilesEncodeTheKeysTheHookReads() throws {
+    var file = ProfileFile()
+    file.games["witcher3.exe"] = GameProfile(enabled: false, performance: false, flowScale: 0.5, bufferMs: 12)
+    let json = try JSONSerialization.jsonObject(with: try JSONEncoder().encode(file)) as? [String: Any]
+    let game = (json?["games"] as? [String: Any])?["witcher3.exe"] as? [String: Any]
+    #expect(game?["enabled"] as? Bool == false)
+    #expect(game?["performance"] as? Bool == false)
+    #expect(game?["flowScale"] as? Double == 0.5)
+    #expect(game?["bufferMs"] as? Double == 12)
+    #expect(json?["default"] != nil)
 }
 
 /// Full install and uninstall through the app's code, against the throwaway test bottle

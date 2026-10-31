@@ -45,9 +45,16 @@ Pick the proxy from the game exe's imports (`llvm-objdump -p game.exe | grep 'DL
 
 Cap the game at half your display's refresh rate (30 on 60 Hz, 60 on 120 Hz, or 30 on 120 Hz) for perfectly even pacing.
 
-## Switches
+## Settings
 
-Set these in the bottle's `[EnvironmentVariables]` in `cxbottle.conf`:
+Per-game profiles live in `~/Library/Application Support/lsfg-metal/profiles.json`, and LSFG Metal.app edits them:
+
+```json
+{ "default": { "enabled": true, "performance": true, "flowScale": 1.0, "bufferMs": 8 },
+  "games": { "witcher3.exe": { "enabled": true, "performance": false, "flowScale": 0.75, "bufferMs": 8 } } }
+```
+
+The hook reads them when the game starts, matching on the exe name. These environment variables override them (for example in the bottle's `[EnvironmentVariables]`):
 
 | Variable | Default | Effect |
 | --- | --- | --- |

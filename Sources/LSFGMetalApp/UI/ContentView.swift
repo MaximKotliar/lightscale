@@ -4,22 +4,29 @@ struct ContentView: View {
     @Bindable var model: AppModel
 
     var body: some View {
-        NavigationSplitView {
-            List(AppModel.Section.allCases, selection: $model.section) { section in
-                Label(section.rawValue, systemImage: section.icon)
-                    .badge(section == .setup ? model.issues : 0)
-                    .tag(section)
-            }
-            .navigationSplitViewColumnWidth(170)
-        } detail: {
-            switch model.section {
-            case .setup: SetupView(model: model)
-            case .games: GamesView(model: model)
-            case .settings: SettingsView(model: model)
-            case .live: LiveView(model: model)
+        Group {
+            if model.hasCompletedSetup {
+                NavigationSplitView {
+                    GameListView(model: model)
+                        .navigationSplitViewColumnWidth(min: 210, ideal: 230)
+                } detail: {
+                    Group {
+                        if let game = model.selectedGame {
+                            GameDetailView(game: game, model: model)
+                        } else {
+                            ContentUnavailableView("Select a Game", systemImage: "gamecontroller")
+                        }
+                    }
+                    // Takes its own space above the content rather than covering it.
+                    .safeAreaInset(edge: .top, spacing: 0) { ProblemBanner(model: model) }
+                }
+            } else {
+                OnboardingView(model: model)
             }
         }
         .task { await model.refresh() }
+        .task { await model.followLive() }
+        .sheet(isPresented: $model.showingSetup) { SetupSheet(model: model) }
         .alert("Something went wrong", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK", role: .cancel) { model.error = nil }
         } message: {
@@ -28,17 +35,47 @@ struct ContentView: View {
     }
 }
 
-/// Small colored status capsule used across screens.
-struct StatusPill: View {
-    let text: String
-    let color: Color
+/// Shown only when a setup check fails after onboarding (e.g. a Lossless Scaling update).
+private struct ProblemBanner: View {
+    let model: AppModel
 
     var body: some View {
-        Text(text)
-            .font(.caption.weight(.medium))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 2)
-            .background(color.opacity(0.15), in: Capsule())
-            .foregroundStyle(color)
+        if let problem = model.status.problems.first {
+            Button { model.showingSetup = true } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    Text("\(problem.title): \(problem.detail)").lineLimit(1)
+                    Text("Fix…").fontWeight(.semibold).foregroundStyle(.tint)
+                }
+                .font(.callout)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(.regularMaterial, in: Capsule())
+                .shadow(color: .black.opacity(0.15), radius: 8, y: 2)
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 10)
+            .frame(maxWidth: .infinity)
+            .transition(.move(edge: .top).combined(with: .opacity))
+        }
+    }
+}
+
+private struct SetupSheet: View {
+    let model: AppModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Setup").font(.title2.weight(.semibold))
+            SetupChecklist(model: model)
+            HStack {
+                Button("Check Again") { Task { await model.refresh() } }.disabled(model.isChecking)
+                Spacer()
+                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(22)
+        .frame(width: 520)
     }
 }

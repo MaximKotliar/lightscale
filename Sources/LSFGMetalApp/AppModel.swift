@@ -1,63 +1,55 @@
-import AppKit
 import Foundation
 import Observation
 
 /// UI state for the whole app. Work happens in the Domain services; this only sequences it.
 @MainActor @Observable
 final class AppModel {
-    enum Section: String, CaseIterable, Identifiable {
-        case setup = "Setup", games = "Games", settings = "Settings", live = "Live"
-        var id: String { rawValue }
-        var icon: String {
-            switch self {
-            case .setup: "checklist"
-            case .games: "gamecontroller"
-            case .settings: "slider.horizontal.3"
-            case .live: "waveform.path.ecg"
-            }
-        }
-    }
-
-    var section: Section = .setup
     private(set) var status = SystemStatus()
     private(set) var games: [Game] = []
-    private(set) var bottles: [Bottle] = []
+    private(set) var profiles = ProfileFile.load()
+    private(set) var live = LiveStats.Snapshot()
     private(set) var isChecking = false
-    private(set) var translateProgress: Double?
+    private(set) var buildProgress: Double?
     private(set) var busyGames: Set<URL> = []
-    var settingsBottle: Bottle?
-    var settings = FrameGenSettings()
-    private var savedSettings = FrameGenSettings()   // what's in the bottle right now
-    private(set) var live: [LiveSample] = []
-    private(set) var liveUpdated: Date?
+    var selection: Game.ID?
+    var showingSetup = false
     var error: String?
 
-    var issues: Int { status.checks.count { $0.state == .missing } }
-    var hookedBottles: [Bottle] { bottles.filter(HookInstaller.bottleIsSetUp) }
+    /// Setup runs once; afterwards problems show as a banner instead.
+    var hasCompletedSetup: Bool {
+        get { access(keyPath: \.hasCompletedSetup); return UserDefaults.standard.bool(forKey: "setupComplete") }
+        set { withMutation(keyPath: \.hasCompletedSetup) { UserDefaults.standard.set(newValue, forKey: "setupComplete") } }
+    }
+
+    var selectedGame: Game? { games.first { $0.id == selection } }
 
     func refresh() async {
         isChecking = true
         defer { isChecking = false }
         status = await DependencyChecker.run()
-        bottles = Bottle.all()
-        let scanned = await GameScanner.scan(bottles: bottles)
-        // Keep games the user added by hand.
-        let manual = games.filter { g in !scanned.contains { $0.exe == g.exe } }
-            .map { g in Game(name: g.name, bottle: g.bottle, exe: g.exe, status: GameScanner.status(exe: g.exe, antiCheat: nil)) }
-        games = (scanned + manual).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-        if settingsBottle == nil || !bottles.contains(settingsBottle!) {
-            settingsBottle = hookedBottles.first ?? status.lossless.flatMap { l in bottles.first { $0.url == l.bottle } } ?? bottles.first
-        }
-        loadSettings()
+        let scanned = await GameScanner.scan(bottles: Bottle.all())
+        let added = games.filter { g in !scanned.contains { $0.exe == g.exe } }
+            .map { Game(name: $0.name, bottle: $0.bottle, exe: $0.exe, status: GameScanner.status(exe: $0.exe, antiCheat: nil)) }
+        games = (scanned + added).sorted(by: Self.order)
+        if selection == nil || selectedGame == nil { selection = games.first?.id }
+        profiles = ProfileFile.load()
     }
 
-    func translateShaders() async {
-        guard let dll = status.lossless?.dll, translateProgress == nil else { return }
-        translateProgress = 0
-        defer { translateProgress = nil }
+    /// Installed games first, then games that can be installed, then the rest; by name within each.
+    private static func order(_ a: Game, _ b: Game) -> Bool {
+        func rank(_ g: Game) -> Int {
+            switch g.status { case .installed: 0; case .ready: 1; case .blocked: 2 }
+        }
+        return rank(a) != rank(b) ? rank(a) < rank(b) : a.name.localizedStandardCompare(b.name) == .orderedAscending
+    }
+
+    func buildKernels() async {
+        guard let dll = status.lossless?.dll, buildProgress == nil else { return }
+        buildProgress = 0
+        defer { buildProgress = nil }
         do {
             try await ShaderTranslator.translate(dll: dll) { value in
-                Task { @MainActor in self.translateProgress = value }
+                Task { @MainActor in self.buildProgress = value }
             }
         } catch {
             self.error = error.localizedDescription
@@ -78,36 +70,58 @@ final class AppModel {
 
     /// Adds a game the scan didn't find (any .exe inside a CrossOver bottle).
     func addGame(exe: URL) {
-        guard let bottle = bottles.first(where: { exe.path.hasPrefix($0.url.path + "/") }) else {
+        guard let bottle = Bottle.all().first(where: { exe.path.hasPrefix($0.url.path + "/") }) else {
             error = "That program isn't inside a CrossOver bottle."
             return
         }
-        guard !games.contains(where: { $0.exe == exe }) else { return }
-        games.append(GameScanner.game(exe: exe, bottle: bottle))
+        if !games.contains(where: { $0.exe == exe }) {
+            games.append(GameScanner.game(exe: exe, bottle: bottle))
+            games.sort(by: Self.order)
+        }
+        selection = exe
     }
 
-    func loadSettings() {
-        settings = settingsBottle.map(FrameGenSettings.load) ?? FrameGenSettings()
-        savedSettings = settings
+    // MARK: Profiles
+
+    func profile(for game: Game) -> GameProfile { profiles.profile(for: game) }
+    func hasCustomProfile(_ game: Game) -> Bool { profiles.games[ProfileFile.key(for: game)] != nil }
+
+    func setProfile(_ profile: GameProfile, for game: Game) {
+        var updated = profiles
+        updated.games[ProfileFile.key(for: game)] = profile == updated.default ? nil : profile
+        save(updated)
     }
 
-    /// Writes the bottle's settings, only when the user actually changed something.
-    func saveSettings() {
-        guard let bottle = settingsBottle, settings != savedSettings else { return }
+    func resetProfile(for game: Game) {
+        var updated = profiles
+        updated.games[ProfileFile.key(for: game)] = nil
+        save(updated)
+    }
+
+    private func save(_ updated: ProfileFile) {
+        guard updated != profiles else { return }
         do {
-            try settings.save(to: bottle)
-            savedSettings = settings
+            try updated.save()
+            profiles = updated
         } catch {
             self.error = error.localizedDescription
         }
     }
 
-    /// Polls the hook's log while the Live screen is visible.
+    // MARK: Live
+
+    /// Live stats for `game` if it's the game running right now.
+    func liveStats(for game: Game) -> LiveStats.Snapshot? {
+        guard live.isLive, let process = live.process, process.lowercased() == ProfileFile.key(for: game) else { return nil }
+        return live
+    }
+
+    func runningGame() -> Game? { games.first { liveStats(for: $0) != nil } }
+
+    /// Polls the hook's log while the window is open.
     func followLive() async {
         while !Task.isCancelled {
-            let (samples, modified) = await Task.detached(priority: .utility) { LiveStats.read() }.value
-            live = samples
-            liveUpdated = modified
+            live = await Task.detached(priority: .utility) { LiveStats.read() }.value
             try? await Task.sleep(for: .seconds(1))
         }
     }
@@ -119,6 +133,5 @@ final class AppModel {
         if let i = games.firstIndex(where: { $0.exe == game.exe }) {
             games[i].status = GameScanner.status(exe: game.exe, antiCheat: nil)
         }
-        if settingsBottle == nil { settingsBottle = game.bottle }
     }
 }
