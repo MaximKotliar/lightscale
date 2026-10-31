@@ -21,7 +21,8 @@ Only for people who own [Lossless Scaling on Steam](https://store.steampowered.c
 | Real game footage, TLOU2 ([docs/real-footage.md](docs/real-footage.md)) | done: beats a blend on 230/235 frames by about 8–9 dB |
 | CrossOver hook: injection, D3DMetal present path, frame insertion ([hook/README.md](hook/README.md)) | working: Witcher 3, 30 → 60 fps on screen |
 | Setup app: checks, shader translation, install into games, settings, live stats | done |
-| Hand-tuned kernels, 3×/4×, HUD handling, more games | next |
+| Kernel optimization: concurrent pass scheduling, 10–25% faster, identical output | done |
+| 3×/4× in the hook, HUD handling, more games | next |
 
 First results on an M4 Max (synthetic pair: photo panned 16 px plus a disc moving 120 px):
 
@@ -31,7 +32,7 @@ First results on an M4 Max (synthetic pair: photo panned 16 px plus a disc movin
 | 50/50 blend | 21.8 dB |
 | Repeat previous frame | 19.6 dB |
 
-Sustained GPU cost per real frame at 2× on an M4 Max: 0.5–2.2 ms at 1080p–1440p, and 1.1–4.5 ms at 4K. CPU cost is about 0.1 ms. Performance mode is about twice as fast as quality mode. Full tables and what they mean for real games: [docs/performance.md](docs/performance.md).
+Sustained GPU cost per real frame at 2× on an M4 Max: 0.4–2.0 ms at 1080p–1440p after scheduling optimizations (10–25% faster than the first port), and 1.1–4.5 ms at 4K before them. CPU cost is about 0.1 ms. Performance mode is about twice as fast as quality mode. Full tables and what they mean for real games: [docs/performance.md](docs/performance.md).
 
 ## App
 
@@ -71,6 +72,7 @@ Translated output is cached in `~/Library/Caches/lsfg-metal/<dll hash>/`.
 - `check`: builds a Metal pipeline for every translated kernel.
 - `generate PREV NEXT -o OUT.png [--multiplier N] [--flow-scale F] [--fp32] [--performance] [--runs N]`: writes the generated frame(s) between two images. With `--multiplier 3` or more it writes `OUT.1.png`, `OUT.2.png`, and so on.
 - `eval VIDEO|DIR [--start S] [--count N] [--max-width W] [--flow-scale F] [--performance] [--samples DIR]`: scores LSFG on real footage. It keeps every other frame of a 60 fps recording as the "real" 30 fps stream, generates the frame in between, and compares it with the frame the game actually rendered (PSNR and SSIM, against a blend and a repeat). `--samples` writes truth | generated | blend images.
+- `profile PREV NEXT [--size WxH] [--performance] [--flow-scale F]`: GPU time per pass.
 - `bench PREV NEXT [--frames N] [--sizes WxH,...]`: sustained benchmark across sizes, modes, flow scales and multipliers.
 
 ## Credits
