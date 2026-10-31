@@ -20,6 +20,7 @@ Only for people who own [Lossless Scaling on Steam](https://store.steampowered.c
 | Sustained benchmark and Mac feasibility ([docs/performance.md](docs/performance.md)) | done |
 | Real game footage, TLOU2 ([docs/real-footage.md](docs/real-footage.md)) | done: beats a blend on 230/235 frames by about 8–9 dB |
 | CrossOver hook: injection, D3DMetal present path, frame insertion ([hook/README.md](hook/README.md)) | working: Witcher 3, 30 → 60 fps on screen |
+| Setup app: checks, shader translation, install into games, settings, live stats | done |
 | Hand-tuned kernels, 3×/4×, HUD handling, more games | next |
 
 First results on an M4 Max (synthetic pair: photo panned 16 px plus a disc moving 120 px):
@@ -32,7 +33,18 @@ First results on an M4 Max (synthetic pair: photo panned 16 px plus a disc movin
 
 Sustained GPU cost per real frame at 2× on an M4 Max: 0.5–2.2 ms at 1080p–1440p, and 1.1–4.5 ms at 4K. CPU cost is about 0.1 ms. Performance mode is about twice as fast as quality mode. Full tables and what they mean for real games: [docs/performance.md](docs/performance.md).
 
-## Setup
+## App
+
+`scripts/build-app.sh` builds **LSFG Metal.app** (`build/LSFG Metal.app`), which does the whole setup without Terminal:
+
+- **Setup:** checks the Apple GPU, CrossOver, your Steam copy of Lossless Scaling, `spirv-cross` and the Metal compiler. It translates the LSFG shaders from your `Lossless.dll` with one click.
+- **Games:** lists Steam games in every CrossOver bottle (plus any `.exe` you add) and picks the right proxy DLL from each game's imports. It refuses games with anti-cheat, 32-bit games, and folders where another mod already uses the proxy name. Install and Remove do what `hook/install.sh` does.
+- **Settings:** frame generation on or off, performance or quality mode, motion detail (flow scale) and pacing buffer, per bottle.
+- **Live:** game fps → on-screen fps, frame time, drops and a 60-second chart, read from the hook's log.
+
+The app isn't sandboxed, because it edits CrossOver bottles and runs CrossOver's `wine`, `spirv-cross` and Apple's `metal`. It's built with the hardened runtime and no extra entitlements.
+
+## Setup (command line)
 
 ```bash
 brew install spirv-cross spirv-tools
