@@ -15,6 +15,7 @@
 //   LSFG_FLOW_SCALE=F    motion-estimation resolution, 0.25-1.0 (default 1.0)
 //   LSFG_PERFORMANCE=0   use LSFG quality mode (default: performance mode)
 //   LSFG_READABLE=0      leave framebufferOnly alone (disables frame generation)
+//   LSFG_LATENCY_MS=N    delay before the generated frame is shown (default 10 ms)
 //   LSFG_LOG=path        log file (default ~/Library/Logs/lsfg-metal.log)
 
 #import <Foundation/Foundation.h>
@@ -281,12 +282,19 @@ static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target) {
 }
 
 // Present hook for a real drawable. Returns YES if it presented the generated frame and the
-// real one itself, paced half a real-frame interval apart.
+// real one itself.
+//
+// Both are scheduled at absolute times relative to when the game presents (T):
+//   generated at T + L, real at T + L + interval / 2.
+// L covers the GPU work still running for these frames. Nothing waits on the previous
+// frame, so a slow game frame can't push later frames back, drawables never pile up, and
+// the game never blocks in nextDrawable. (Chaining presentAfterMinimumDuration did: in
+// Witcher 3 it throttled 30 real fps down to 12-15.)
 static BOOL fgPresent(id<CAMetalDrawable> real) {
     CFTimeInterval now = CACurrentMediaTime();
     if (lastRealPresent > 0) {
         CFTimeInterval dt = now - lastRealPresent;
-        if (dt < 0.25) realInterval = realInterval > 0 ? realInterval * 0.9 + dt * 0.1 : dt;
+        if (dt > 0.004 && dt < 0.25) realInterval = realInterval > 0 ? realInterval * 0.8 + dt * 0.2 : dt;
     }
     lastRealPresent = now;
 
@@ -295,17 +303,15 @@ static BOOL fgPresent(id<CAMetalDrawable> real) {
     id<CAMetalDrawable> extra = pending[key];
     [pending removeObjectForKey:key];
     os_unfair_lock_unlock(&pendingLock);
-    if (!extra) return NO;
+    if (!extra || realInterval <= 0) return NO;
 
-    // Space frames slightly under half a real interval. The display rounds a minimum
-    // duration up to whole refreshes, so exactly half (16.7 ms = 2 refreshes at 120 Hz)
-    // often becomes 3; frames then queue up, the game blocks for drawables, the measured
-    // interval grows, and pacing locks in too slow. The margin keeps the queue draining.
-    CFTimeInterval half = MIN(MAX(realInterval / 2 - 0.002, 0.004), 0.05);
+    static double latency = -1;
+    if (latency < 0) latency = envFloat("LSFG_LATENCY_MS", 10) / 1000.0;
+    CFTimeInterval half = MIN(realInterval, 0.1) / 2;
     trackPresented(extra);
     trackPresented(real);
-    [extra presentAfterMinimumDuration:half];
-    [real presentAfterMinimumDuration:half];
+    [extra presentAtTime:now + latency];
+    [real presentAtTime:now + latency + half];
     bump(kGenerated);
     return YES;
 }

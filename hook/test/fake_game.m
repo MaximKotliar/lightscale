@@ -24,7 +24,10 @@ int main(void) {
         id<MTLCommandQueue> queue = [dev newCommandQueue];
         __block int frame = 0;
         CFTimeInterval start = CACurrentMediaTime();
-        [NSTimer scheduledTimerWithTimeInterval:1.0 / 30 repeats:YES block:^(NSTimer *t) {
+        // FAKE_JITTER=1: frame times vary 28-38 ms like a real game instead of a steady 33.3.
+        BOOL jitter = getenv("FAKE_JITTER") != NULL;
+        [NSTimer scheduledTimerWithTimeInterval:1.0 / (getenv("FAKE_FPS") ? atof(getenv("FAKE_FPS")) : 30) repeats:YES block:^(NSTimer *t) {
+            if (jitter) usleep(arc4random_uniform(10000));
             id<CAMetalDrawable> d = [layer nextDrawable];
             if (!d) return;
             MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
