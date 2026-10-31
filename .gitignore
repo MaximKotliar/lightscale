@@ -1,0 +1,21 @@
+# Build output
+.build/
+build/
+*.o
+*.dylib
+DerivedData/
+.DS_Store
+
+# Licensed Lossless Scaling assets: never commit (load at runtime from the user's own copy)
+Lossless.dll
+*.dll
+*.dxbc
+*.spv
+*.spirv
+shaders-extracted/
+cache/
+
+# Test frames
+frames/
+*.png
+!docs/**/*.png
