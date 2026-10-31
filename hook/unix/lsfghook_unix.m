@@ -15,7 +15,7 @@
 //   LSFG_FLOW_SCALE=F    motion-estimation resolution, 0.25-1.0 (default 1.0)
 //   LSFG_PERFORMANCE=0   use LSFG quality mode (default: performance mode)
 //   LSFG_READABLE=0      leave framebufferOnly alone (disables frame generation)
-//   LSFG_LATENCY_MS=N    delay before the generated frame is shown (default 10 ms)
+//   LSFG_BUFFER_MS=N     scheduling headroom that absorbs frame-time jitter (default 8 ms)
 //   LSFG_LOG=path        log file (default ~/Library/Logs/lsfg-metal.log)
 
 #import <Foundation/Foundation.h>
@@ -175,9 +175,25 @@ static NSUInteger fgWidth, fgHeight;
 static MTLPixelFormat fgFormat;
 static __weak CAMetalLayer *fgLayer;   // layer the game's drawables come from
 static char kDrawableTargetKey;        // command buffer -> drawable texture it renders into
-static os_unfair_lock pendingLock = OS_UNFAIR_LOCK_INIT;
-static NSMutableDictionary<NSNumber *, id<CAMetalDrawable>> *pending; // real drawable texture -> generated drawable
-static CFTimeInterval lastRealPresent, realInterval;
+static CFTimeInterval lastCompletion, frameInterval;      // GPU completion cadence of real frames
+
+// Our own presentation layer, a sublayer on top of the game's layer.
+//
+// The game's drawables are never shown: each real frame is copied into a ring texture, and
+// generated + real frames are shown on this overlay from our own queue. That way the game
+// gets its drawables back immediately (it never waits for the display), and pacing is ours.
+// With only the game's 3 drawables, holding generated and real frames until the compositor
+// showed them (~25 ms after the GPU finished) made the game wait in nextDrawable.
+static CAMetalLayer *overlay;
+static _Atomic int overlayState;          // 0 none, 1 attaching, 2 ready, -1 off
+enum { kSlots = 4 };
+static id<MTLTexture> realRing[kSlots], genRing[kSlots];
+static dispatch_semaphore_t slotsFree;
+static int nextSlot;
+static id<MTLCommandQueue> presentQueue;
+static dispatch_queue_t presenter;
+static NSMutableSet<NSNumber *> *captured; // game drawable textures whose frame we took over
+static os_unfair_lock capturedLock = OS_UNFAIR_LOCK_INIT;
 
 // Pacing as the display saw it: intervals between consecutive on-screen frames.
 static os_unfair_lock pacingLock = OS_UNFAIR_LOCK_INIT;
@@ -224,7 +240,7 @@ static BOOL loadBridge(void) {
     return bridge.create && bridge.input && bridge.encode && bridge.output;
 }
 
-// Builds the LSFG context in the background (pipelines can take a moment).
+// Builds the LSFG context and ring textures in the background (pipelines can take a moment).
 static void fgCreateContext(id<MTLDevice> device, id<MTLTexture> frame) {
     int expected = 0;
     if (!atomic_compare_exchange_strong(&fgState, &expected, 1)) return;
@@ -241,6 +257,13 @@ static void fgCreateContext(id<MTLDevice> device, id<MTLTexture> frame) {
             atomic_store(&fgState, -1);
             return;
         }
+        MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format width:w height:h mipmapped:NO];
+        d.usage = MTLTextureUsageShaderRead;
+        d.storageMode = MTLStorageModePrivate;
+        for (int i = 0; i < kSlots; i++) { realRing[i] = [device newTextureWithDescriptor:d]; genRing[i] = [device newTextureWithDescriptor:d]; }
+        presentQueue = [device newCommandQueue];
+        presenter = dispatch_queue_create("lsfg.presenter", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
+        slotsFree = dispatch_semaphore_create(kSlots);
         fgContext = ctx;
         fgWidth = w; fgHeight = h; fgFormat = format;
         atomic_store(&fgState, 2);
@@ -249,71 +272,150 @@ static void fgCreateContext(id<MTLDevice> device, id<MTLTexture> frame) {
     });
 }
 
+// Puts our overlay layer on top of the game's layer (main thread; ready a moment later).
+static void attachOverlay(CAMetalLayer *game) {
+    int expected = 0;
+    if (!game || !atomic_compare_exchange_strong(&overlayState, &expected, 1)) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        CAMetalLayer *o = [CAMetalLayer layer];
+        o.device = game.device;
+        o.pixelFormat = game.pixelFormat;
+        o.colorspace = game.colorspace;
+        o.wantsExtendedDynamicRangeContent = game.wantsExtendedDynamicRangeContent;
+        o.framebufferOnly = NO;
+        o.drawableSize = game.drawableSize;
+        o.contentsScale = game.contentsScale;
+        o.contentsGravity = game.contentsGravity;
+        o.displaySyncEnabled = game.displaySyncEnabled;
+        o.maximumDrawableCount = 3;
+        o.opaque = YES;
+        o.frame = game.bounds;
+        o.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        [game addSublayer:o];
+        [CATransaction commit];
+        overlay = o;
+        atomic_store(&overlayState, 2);
+        lsfg_log(@"overlay attached: %.0fx%.0f on %@", o.drawableSize.width, o.drawableSize.height, NSStringFromClass([game class]));
+    });
+}
+
+static BOOL traceOn(void) { static int on = -1; if (on < 0) on = envOn("LSFG_TRACE", NO); return on; }
+
+// Presenter queue: shows ring slot `slot` (generated frame first, if any, then the real one).
+// Both are presented by our command buffer once it is scheduled (presentDrawable:atTime:);
+// presentAtTime: before the GPU finishes drops frames.
+//
+// Display times follow a steady cadence: each frame continues from the previous real frame's
+// target (+ half an interval), so the game's frame-time jitter doesn't reach the screen. The
+// cadence only snaps to "now" when frames arrive too late, and never runs more than one
+// interval ahead (bounded latency).
+static CFTimeInterval lastRealTarget;
+static void presentSlot(int slot, BOOL hasGenerated, CFTimeInterval completedAt) {
+    CAMetalLayer *o = overlay;
+    id<MTLCommandBuffer> cb = [presentQueue commandBuffer];
+    CFTimeInterval period = MIN(frameInterval > 0 ? frameInterval : 1.0 / 30, 0.1), half = period / 2;
+    // Scheduling a little ahead absorbs the game's frame-time jitter (and gives the compositor
+    // time): frames that arrive up to `buffer` late still land on the cadence.
+    static double buffer = -1;
+    if (buffer < 0) buffer = envFloat("LSFG_BUFFER_MS", 8) / 1000.0;
+    CFTimeInterval earliest = CACurrentMediaTime() + 0.003;
+    CFTimeInterval step = hasGenerated ? half : period;
+    CFTimeInterval first = lastRealTarget > 0 ? lastRealTarget + step : earliest;
+    if (first < earliest) first = earliest + buffer;             // fell behind: restart the cadence
+    if (first > earliest + buffer + half) first = earliest + buffer; // drifted ahead: pull latency back in
+    CFTimeInterval realAt = hasGenerated ? first + half : first;
+    lastRealTarget = realAt;
+
+    id<CAMetalDrawable> g = nil, r = nil;
+    if (hasGenerated && (g = [o nextDrawable])) {
+        id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+        [blit copyFromTexture:genRing[slot] toTexture:g.texture];
+        [blit endEncoding];
+        trackPresented(g);
+        [cb presentDrawable:g atTime:first];
+        bump(kGenerated);
+    }
+    if ((r = [o nextDrawable])) {
+        id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+        [blit copyFromTexture:realRing[slot] toTexture:r.texture];
+        [blit endEncoding];
+        trackPresented(r);
+        [cb presentDrawable:r atTime:realAt];
+    }
+    if (traceOn()) {
+        static int n;
+        if (n++ < 12) lsfg_log(@"trace slot %d: %.1f ms after GPU completion, generated at +%.1f, real at +%.1f ms (half %.1f)",
+                               slot, (CACurrentMediaTime() - completedAt) * 1000, (first - CACurrentMediaTime()) * 1000,
+                               (realAt - CACurrentMediaTime()) * 1000, half * 1000);
+    }
+    static int traced;
+    BOOL trace = traceOn() && traced++ < 40;
+    CFTimeInterval committed = CACurrentMediaTime();
+    [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
+        if (trace) lsfg_log(@"trace copy cb: gpu start +%.1f end +%.1f ms after commit; first target at +%.1f",
+                            (done.GPUStartTime - committed) * 1000, (done.GPUEndTime - committed) * 1000, (first - committed) * 1000);
+        dispatch_semaphore_signal(slotsFree);
+    }];
+    [cb commit];
+}
+
 // Commit hook, for the command buffer that renders a real frame into drawable texture `target`.
 static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target) {
-    NSNumber *key = @((uintptr_t)(__bridge void *)target);
-    os_unfair_lock_lock(&pendingLock);
-    [pending removeObjectForKey:key]; // never show a stale generated frame for this drawable
-    os_unfair_lock_unlock(&pendingLock);
-
     int state = atomic_load(&fgState);
     if (state == 0) fgCreateContext(cb.device, target);
     if (state != 2) return;
     if (target.width != fgWidth || target.height != fgHeight || target.pixelFormat != fgFormat) {
-        static dispatch_once_t once;
-        dispatch_once(&once, ^{ lsfg_log(@"frame size or format changed; frame generation paused (restart the game)"); });
+        if (atomic_exchange(&overlayState, -1) == 2) {
+            lsfg_log(@"frame size or format changed; frame generation off (restart the game)");
+            CAMetalLayer *o = overlay;
+            dispatch_async(dispatch_get_main_queue(), ^{ [o removeFromSuperlayer]; });
+        }
         return;
     }
+    int ov = atomic_load(&overlayState);
+    if (ov == 0) attachOverlay(fgLayer);
+
+    // Feed LSFG every real frame (this also warms up its history before the overlay is up).
     id<MTLTexture> input = (__bridge id<MTLTexture>)bridge.input(fgContext);
     id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
     [blit copyFromTexture:target toTexture:input];
     [blit endEncoding];
-    if (bridge.encode(fgContext, (__bridge const void *)cb) <= 0) return; // history still filling
+    int generated = bridge.encode(fgContext, (__bridge const void *)cb);
+    if (ov != 2) return; // the game keeps presenting itself until the overlay is ready
 
-    CAMetalLayer *layer = fgLayer;
-    id<CAMetalDrawable> extra = layer ? [layer nextDrawable] : nil;
-    if (!extra || extra.texture.width != fgWidth || extra.texture.height != fgHeight) return;
+    dispatch_semaphore_wait(slotsFree, DISPATCH_TIME_FOREVER); // only waits if 4 frames are queued
+    int slot = nextSlot++ % kSlots;
     blit = [cb blitCommandEncoder];
-    [blit copyFromTexture:(__bridge id<MTLTexture>)bridge.output(fgContext, 0) toTexture:extra.texture];
+    [blit copyFromTexture:target toTexture:realRing[slot]];
+    if (generated > 0) [blit copyFromTexture:(__bridge id<MTLTexture>)bridge.output(fgContext, 0) toTexture:genRing[slot]];
     [blit endEncoding];
-    os_unfair_lock_lock(&pendingLock);
-    pending[key] = extra;
-    os_unfair_lock_unlock(&pendingLock);
+    os_unfair_lock_lock(&capturedLock);
+    [captured addObject:@((uintptr_t)(__bridge void *)target)];
+    os_unfair_lock_unlock(&capturedLock);
+
+    BOOL hasGenerated = generated > 0;
+    [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
+        CFTimeInterval now = CACurrentMediaTime();
+        if (lastCompletion > 0) {
+            CFTimeInterval dt = now - lastCompletion;
+            if (dt > 0.004 && dt < 0.25) frameInterval = frameInterval > 0 ? frameInterval * 0.8 + dt * 0.2 : dt;
+        }
+        lastCompletion = now;
+        dispatch_async(presenter, ^{ presentSlot(slot, hasGenerated, now); });
+    }];
 }
 
-// Present hook for a real drawable. Returns YES if it presented the generated frame and the
-// real one itself.
-//
-// Both are scheduled at absolute times relative to when the game presents (T):
-//   generated at T + L, real at T + L + interval / 2.
-// L covers the GPU work still running for these frames. Nothing waits on the previous
-// frame, so a slow game frame can't push later frames back, drawables never pile up, and
-// the game never blocks in nextDrawable. (Chaining presentAfterMinimumDuration did: in
-// Witcher 3 it throttled 30 real fps down to 12-15.)
+// Present hook for a game drawable. Returns YES if we took the frame over (it is shown on the
+// overlay instead): the drawable then goes back to the game without being presented.
 static BOOL fgPresent(id<CAMetalDrawable> real) {
-    CFTimeInterval now = CACurrentMediaTime();
-    if (lastRealPresent > 0) {
-        CFTimeInterval dt = now - lastRealPresent;
-        if (dt > 0.004 && dt < 0.25) realInterval = realInterval > 0 ? realInterval * 0.8 + dt * 0.2 : dt;
-    }
-    lastRealPresent = now;
-
     NSNumber *key = @((uintptr_t)(__bridge void *)real.texture);
-    os_unfair_lock_lock(&pendingLock);
-    id<CAMetalDrawable> extra = pending[key];
-    [pending removeObjectForKey:key];
-    os_unfair_lock_unlock(&pendingLock);
-    if (!extra || realInterval <= 0) return NO;
-
-    static double latency = -1;
-    if (latency < 0) latency = envFloat("LSFG_LATENCY_MS", 10) / 1000.0;
-    CFTimeInterval half = MIN(realInterval, 0.1) / 2;
-    trackPresented(extra);
-    trackPresented(real);
-    [extra presentAtTime:now + latency];
-    [real presentAtTime:now + latency + half];
-    bump(kGenerated);
-    return YES;
+    os_unfair_lock_lock(&capturedLock);
+    BOOL ours = [captured containsObject:key];
+    [captured removeObject:key];
+    os_unfair_lock_unlock(&capturedLock);
+    return ours;
 }
 
 #pragma mark - Hooks
@@ -335,6 +437,7 @@ static void installPresentHooks(void) {
                          (__bridge void *)cb, cb ? (long)cb.status : -1L);
             }
             if (fgEnabled && fgPresent(self)) return;
+            if ([(id<CAMetalDrawable>)self layer] != overlay) trackPresented(self);
             ((void (*)(id, SEL))orig)(self, @selector(present));
         };
     });
@@ -484,6 +587,7 @@ static void installLayerHook(void) {
         return NO;
     }, ^id(IMP orig) {
         return ^id(id self) {
+            if (self == overlay) return ((id (*)(id, SEL))orig)(self, @selector(nextDrawable));
             // The GPU driver's command-buffer classes only exist once the game has a device,
             // which is certainly true by the first nextDrawable. Scanning every class takes
             // about a second, so do it off the game's present path.
@@ -531,6 +635,8 @@ static void startStatsTimer(void) {
             double mean = shownSum / shownCount, sd = sqrt(MAX(0, shownSumSq / shownCount - mean * mean));
             [line appendFormat:@" | on screen %d fps, interval %.1f ms ±%.1f, max %.1f, dropped %d",
                                shownCount + 1, mean, sd, shownMax, droppedCount];
+        } else if (shownCount + droppedCount > 0) {
+            [line appendFormat:@" | on screen %d, dropped %d", shownCount, droppedCount];
         }
         shownCount = droppedCount = 0; shownSum = shownSumSq = shownMax = 0;
         os_unfair_lock_unlock(&pacingLock);
@@ -548,7 +654,7 @@ __attribute__((constructor)) static void lsfg_unix_init(void) {
         const char *enable = getenv("LSFG_ENABLE");
         if (enable && enable[0] == '0') { lsfg_log(@"LSFG_ENABLE=0, no hooks installed"); return; }
         fgEnabled = envOn("LSFG_FG", YES) && envOn("LSFG_READABLE", YES) && loadBridge();
-        pending = [NSMutableDictionary dictionary];
+        captured = [NSMutableSet set];
         lsfg_log(@"frame generation %s", fgEnabled ? "on" : "off");
         installLayerHook();
         startStatsTimer();
