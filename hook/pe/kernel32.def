@@ -1,0 +1,9 @@
+LIBRARY kernel32.dll
+EXPORTS
+LoadLibraryW
+GetProcAddress
+GetStdHandle
+WriteFile
+ExitProcess
+GetLastError
+GetModuleHandleW
