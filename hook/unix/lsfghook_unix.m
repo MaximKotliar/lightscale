@@ -113,7 +113,8 @@ static void hookAll(SEL sel, BOOL (^match)(Class), id (^make)(IMP original)) {
 // Detailed logging for the first frames only: which pass writes the drawable, from which
 // texture, and whether its command buffer is committed before or after -present.
 static const int kDiagFrames = 6;
-static _Atomic int diagPresents;
+static _Atomic int diagPresents = 1000;  // set to 0 once every hook is installed
+static __weak id lastDrawableCB;          // most recent command buffer that wrote a drawable
 static void *drawableTextures[8];  // recent drawable textures, compared by pointer only
 static _Atomic unsigned drawableIndex;
 static char kWritesDrawableKey;
@@ -147,8 +148,12 @@ static void installPresentHooks(void) {
             bump(kDrawablePresent);
             describeDrawable(self, "drawable.present");
             int k = atomic_fetch_add(&diagPresents, 1);
-            if (k < kDiagFrames)
-                lsfg_log(@"diag present #%d drawable texture %p on %@", k, (__bridge void *)[(id<CAMetalDrawable>)self texture], threadName());
+            if (k < kDiagFrames) {
+                id<MTLCommandBuffer> cb = lastDrawableCB;
+                lsfg_log(@"diag present #%d drawable texture %p on %@; last drawable-writing cb %p status %ld",
+                         k, (__bridge void *)[(id<CAMetalDrawable>)self texture], threadName(),
+                         (__bridge void *)cb, cb ? (long)cb.status : -1L);
+            }
             ((void (*)(id, SEL))orig)(self, @selector(present));
         };
     });
@@ -205,6 +210,7 @@ static void installPresentHooks(void) {
             id enc = ((id (*)(id, SEL, id))orig)(self, @selector(renderCommandEncoderWithDescriptor:), desc);
             if (diagActive() && isDrawableTexture(desc.colorAttachments[0].texture)) {
                 objc_setAssociatedObject(self, &kWritesDrawableKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                lastDrawableCB = self;
                 if (enc) objc_setAssociatedObject(enc, &kWritesDrawableKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                 lsfg_log(@"diag render pass into drawable: cb %@ %p, encoder %@, load %lu store %lu, on %@",
                          NSStringFromClass([self class]), (__bridge void *)self, NSStringFromClass([enc class]),
@@ -236,7 +242,8 @@ static void installPresentHooks(void) {
         return ^(id self, id<MTLTexture> src, NSUInteger ss, NSUInteger sl, MTLOrigin so, MTLSize sz,
                  id<MTLTexture> dst, NSUInteger ds, NSUInteger dl, MTLOrigin dor) {
             if (diagActive() && isDrawableTexture(dst))
-                lsfg_log(@"diag blit copy into drawable from %@ on %@", describeTexture(src), threadName());
+                lsfg_log(@"diag blit copy into drawable from %@ (encoder %@) on %@", describeTexture(src),
+                         NSStringFromClass([self class]), threadName());
             ((void (*)(id, SEL, id, NSUInteger, NSUInteger, MTLOrigin, MTLSize, id, NSUInteger, NSUInteger, MTLOrigin))orig)(
                 self, @selector(copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:),
                 src, ss, sl, so, sz, dst, ds, dl, dor);
@@ -256,7 +263,18 @@ static void installPresentHooks(void) {
             ((void (*)(id, SEL, id, NSUInteger))orig)(self, @selector(setTexture:atIndex:), t, index);
         };
     });
-    lsfg_log(@"present hooks installed");
+    // MTL4 command buffers take an MTL4RenderPassDescriptor (same colorAttachments shape).
+    hookAll(@selector(renderCommandEncoderWithDescriptor:), ^BOOL(Class c) { return conforms(c, @protocol(MTL4CommandBuffer)); }, ^id(IMP orig) {
+        return ^id(id self, id desc) {
+            id enc = ((id (*)(id, SEL, id))orig)(self, @selector(renderCommandEncoderWithDescriptor:), desc);
+            id target = [[[desc valueForKey:@"colorAttachments"] objectAtIndexedSubscript:0] valueForKey:@"texture"];
+            if (diagActive() && isDrawableTexture(target))
+                lsfg_log(@"diag MTL4 render pass into drawable: cb %@ on %@", NSStringFromClass([self class]), threadName());
+            return enc;
+        };
+    });
+    atomic_store(&diagPresents, 0);
+    lsfg_log(@"present hooks installed; logging the next %d frames in detail", kDiagFrames);
 }
 
 static void installLayerHook(void) {
