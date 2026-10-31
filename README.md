@@ -16,8 +16,9 @@ Only for people who own [Lossless Scaling on Steam](https://store.steampowered.c
 | Find `Lossless.dll` in CrossOver bottles (Steam app 993090) | done |
 | Read the DLL's shaders: 202 DXBC (IDs 101–302) and 98 SPIR-V (IDs 303–400, LSFG 3.1) | done |
 | Translate all 300 to one `lsfg.metallib` and build Metal pipelines | done |
-| LSFG 3.1 pass graph on Metal, two-frame CLI | done |
-| Performance mode (3.1p), hand-tuned kernels, game interposition | next |
+| LSFG 3.1 pass graph on Metal (quality and performance modes), two-frame CLI | done |
+| Sustained benchmark and Mac feasibility ([docs/performance.md](docs/performance.md)) | done |
+| Hand-tuned kernels, game interposition | next |
 
 First results on an M4 Max (synthetic pair: photo panned 16 px plus a disc moving 120 px):
 
@@ -27,7 +28,7 @@ First results on an M4 Max (synthetic pair: photo panned 16 px plus a disc movin
 | 50/50 blend | 21.8 dB |
 | Repeat previous frame | 19.6 dB |
 
-GPU time per real frame with one generated frame (fp16): about 7–10 ms at flow scale 1.0 and 1.5–3.7 ms at 0.5, from 1080p to 4K. These are rough, single-shot numbers.
+Sustained GPU cost per real frame at 2× on an M4 Max: 0.5–2.2 ms at 1080p–1440p, and 1.1–4.5 ms at 4K. CPU cost is about 0.1 ms. Performance mode is about twice as fast as quality mode. Full tables and what they mean for real games: [docs/performance.md](docs/performance.md).
 
 ## Setup
 
@@ -54,7 +55,8 @@ Translated output is cached in `~/Library/Caches/lsfg-metal/<dll hash>/`.
 - `inspect [--verbose]`: lists the shaders with thread-group size, instruction count and named bindings.
 - `dump --out DIR`: writes the shaders as `.dxbc` files. Keep `DIR` outside the repo.
 - `check`: builds a Metal pipeline for every translated kernel.
-- `generate PREV NEXT -o OUT.png [--multiplier N] [--flow-scale F] [--fp32] [--runs N]`: writes the generated frame(s) between two images. With `--multiplier 3` or more it writes `OUT.1.png`, `OUT.2.png`, and so on.
+- `generate PREV NEXT -o OUT.png [--multiplier N] [--flow-scale F] [--fp32] [--performance] [--runs N]`: writes the generated frame(s) between two images. With `--multiplier 3` or more it writes `OUT.1.png`, `OUT.2.png`, and so on.
+- `bench PREV NEXT [--frames N] [--sizes WxH,...]`: sustained benchmark across sizes, modes, flow scales and multipliers.
 
 ## Credits
 
