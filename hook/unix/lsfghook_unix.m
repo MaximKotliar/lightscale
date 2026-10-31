@@ -117,7 +117,15 @@ static _Atomic int diagPresents = 1000;  // set to 0 once every hook is installe
 static __weak id lastDrawableCB;          // most recent command buffer that wrote a drawable
 static void *drawableTextures[8];  // recent drawable textures, compared by pointer only
 static _Atomic unsigned drawableIndex;
-static char kWritesDrawableKey;
+static char kWritesDrawableKey, kOwnerKey;
+
+// Marks the command buffer that owns `encoder` (if known) as writing a drawable.
+static void markOwnerWritesDrawable(id encoder) {
+    id cb = objc_getAssociatedObject(encoder, &kOwnerKey);
+    if (!cb) return;
+    objc_setAssociatedObject(cb, &kWritesDrawableKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    lastDrawableCB = cb;
+}
 
 static BOOL diagActive(void) { return atomic_load(&diagPresents) < kDiagFrames; }
 static BOOL isDrawableTexture(id t) {
@@ -220,6 +228,14 @@ static void installPresentHooks(void) {
             return enc;
         };
     });
+    hookAll(@selector(blitCommandEncoder), isCommandBuffer, ^id(IMP orig) {
+        return ^id(id self) {
+            id enc = ((id (*)(id, SEL))orig)(self, @selector(blitCommandEncoder));
+            // Weak link back so a copy into a drawable can find its command buffer.
+            if (diagActive() && enc) objc_setAssociatedObject(enc, &kOwnerKey, self, OBJC_ASSOCIATION_ASSIGN);
+            return enc;
+        };
+    });
     hookAll(@selector(commit), isCommandBuffer, ^id(IMP orig) {
         return ^(id self) {
             if (diagActive() && objc_getAssociatedObject(self, &kWritesDrawableKey))
@@ -241,9 +257,11 @@ static void installPresentHooks(void) {
             ^BOOL(Class c) { return conforms(c, blitEncoder); }, ^id(IMP orig) {
         return ^(id self, id<MTLTexture> src, NSUInteger ss, NSUInteger sl, MTLOrigin so, MTLSize sz,
                  id<MTLTexture> dst, NSUInteger ds, NSUInteger dl, MTLOrigin dor) {
-            if (diagActive() && isDrawableTexture(dst))
+            if (diagActive() && isDrawableTexture(dst)) {
+                markOwnerWritesDrawable(self);
                 lsfg_log(@"diag blit copy into drawable from %@ (encoder %@) on %@", describeTexture(src),
                          NSStringFromClass([self class]), threadName());
+            }
             ((void (*)(id, SEL, id, NSUInteger, NSUInteger, MTLOrigin, MTLSize, id, NSUInteger, NSUInteger, MTLOrigin))orig)(
                 self, @selector(copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:),
                 src, ss, sl, so, sz, dst, ds, dl, dor);
@@ -251,6 +269,7 @@ static void installPresentHooks(void) {
     });
     hookAll(@selector(copyFromTexture:toTexture:), ^BOOL(Class c) { return conforms(c, blitEncoder); }, ^id(IMP orig) {
         return ^(id self, id<MTLTexture> src, id<MTLTexture> dst) {
+            if (diagActive() && isDrawableTexture(dst)) markOwnerWritesDrawable(self);
             if (diagActive() && isDrawableTexture(dst))
                 lsfg_log(@"diag blit copy (whole) into drawable from %@ on %@", describeTexture(src), threadName());
             ((void (*)(id, SEL, id, id))orig)(self, @selector(copyFromTexture:toTexture:), src, dst);
