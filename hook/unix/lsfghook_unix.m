@@ -14,6 +14,7 @@
 #import <dlfcn.h>
 #import <objc/runtime.h>
 #import <os/lock.h>
+#import <pthread.h>
 #import <stdatomic.h>
 
 #pragma mark - Logging
@@ -67,7 +68,10 @@ static void describeDrawable(id<CAMetalDrawable> d, const char *via) {
 
 #pragma mark - Swizzling
 
-// Protocol conformance without messaging the class (some runtime classes misbehave).
+// Matching must never message a class or resolve a selector on it: that can run the
+// class's +initialize, and arbitrary classes may throw or block there (seen in Witcher 3:
+// an exception from +initialize hung D3DMetal's present queue). Only read the runtime's
+// tables: protocol lists here, method lists in hookAll.
 static BOOL conforms(Class c, Protocol *p) {
     for (; c; c = class_getSuperclass(c))
         if (class_conformsToProtocol(c, p)) return YES;
@@ -104,6 +108,33 @@ static void hookAll(SEL sel, BOOL (^match)(Class), id (^make)(IMP original)) {
     os_unfair_lock_unlock(&hookLock);
 }
 
+#pragma mark - Frame-path diagnostics
+
+// Detailed logging for the first frames only: which pass writes the drawable, from which
+// texture, and whether its command buffer is committed before or after -present.
+static const int kDiagFrames = 6;
+static _Atomic int diagPresents;
+static void *drawableTextures[8];  // recent drawable textures, compared by pointer only
+static _Atomic unsigned drawableIndex;
+static char kWritesDrawableKey;
+
+static BOOL diagActive(void) { return atomic_load(&diagPresents) < kDiagFrames; }
+static BOOL isDrawableTexture(id t) {
+    if (!t) return NO;
+    for (int i = 0; i < 8; i++) if (drawableTextures[i] == (__bridge void *)t) return YES;
+    return NO;
+}
+static NSString *describeTexture(id<MTLTexture> t) {
+    return t ? [NSString stringWithFormat:@"%@ %p %lux%lu fmt %lu usage 0x%lx storage %lu", NSStringFromClass([(id)t class]),
+                (__bridge void *)t, (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.pixelFormat,
+                (unsigned long)t.usage, (unsigned long)t.storageMode] : @"nil";
+}
+static NSString *threadName(void) {
+    char name[64] = {0};
+    pthread_getname_np(pthread_self(), name, sizeof name);
+    return [NSString stringWithFormat:@"%s/%p", name[0] ? name : "?", (void *)pthread_self()];
+}
+
 #pragma mark - Hooks
 
 static void installPresentHooks(void) {
@@ -115,6 +146,9 @@ static void installPresentHooks(void) {
         return ^(id self) {
             bump(kDrawablePresent);
             describeDrawable(self, "drawable.present");
+            int k = atomic_fetch_add(&diagPresents, 1);
+            if (k < kDiagFrames)
+                lsfg_log(@"diag present #%d drawable texture %p on %@", k, (__bridge void *)[(id<CAMetalDrawable>)self texture], threadName());
             ((void (*)(id, SEL))orig)(self, @selector(present));
         };
     });
@@ -151,7 +185,7 @@ static void installPresentHooks(void) {
             ((void (*)(id, SEL, id, CFTimeInterval))orig)(self, @selector(presentDrawable:afterMinimumDuration:), d, t);
         };
     });
-    BOOL (^signals)(Class) = ^BOOL(Class c) { return class_respondsToSelector(c, @selector(signalDrawable:)); };
+    BOOL (^signals)(Class) = ^BOOL(Class c) { return conforms(c, @protocol(MTL4CommandQueue)); };
     hookAll(@selector(signalDrawable:), signals, ^id(IMP orig) {
         return ^(id self, id d) {
             bump(kMTL4Signal);
@@ -165,6 +199,63 @@ static void installPresentHooks(void) {
             ((void (*)(id, SEL, id))orig)(self, @selector(waitForDrawable:), d);
         };
     });
+    // Diagnostics: who writes the drawable.
+    hookAll(@selector(renderCommandEncoderWithDescriptor:), isCommandBuffer, ^id(IMP orig) {
+        return ^id(id self, MTLRenderPassDescriptor *desc) {
+            id enc = ((id (*)(id, SEL, id))orig)(self, @selector(renderCommandEncoderWithDescriptor:), desc);
+            if (diagActive() && isDrawableTexture(desc.colorAttachments[0].texture)) {
+                objc_setAssociatedObject(self, &kWritesDrawableKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                if (enc) objc_setAssociatedObject(enc, &kWritesDrawableKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                lsfg_log(@"diag render pass into drawable: cb %@ %p, encoder %@, load %lu store %lu, on %@",
+                         NSStringFromClass([self class]), (__bridge void *)self, NSStringFromClass([enc class]),
+                         (unsigned long)desc.colorAttachments[0].loadAction, (unsigned long)desc.colorAttachments[0].storeAction,
+                         threadName());
+            }
+            return enc;
+        };
+    });
+    hookAll(@selector(commit), isCommandBuffer, ^id(IMP orig) {
+        return ^(id self) {
+            if (diagActive() && objc_getAssociatedObject(self, &kWritesDrawableKey))
+                lsfg_log(@"diag commit of drawable-writing cb %p (presents so far: %d) on %@", (__bridge void *)self,
+                         atomic_load(&diagPresents), threadName());
+            ((void (*)(id, SEL))orig)(self, @selector(commit));
+        };
+    });
+    Protocol *renderEncoder = @protocol(MTLRenderCommandEncoder), *blitEncoder = @protocol(MTLBlitCommandEncoder);
+    Protocol *computeEncoder = @protocol(MTLComputeCommandEncoder);
+    hookAll(@selector(setFragmentTexture:atIndex:), ^BOOL(Class c) { return conforms(c, renderEncoder); }, ^id(IMP orig) {
+        return ^(id self, id<MTLTexture> t, NSUInteger index) {
+            if (diagActive() && objc_getAssociatedObject(self, &kWritesDrawableKey))
+                lsfg_log(@"diag drawable pass samples texture[%lu]: %@", (unsigned long)index, describeTexture(t));
+            ((void (*)(id, SEL, id, NSUInteger))orig)(self, @selector(setFragmentTexture:atIndex:), t, index);
+        };
+    });
+    hookAll(@selector(copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:),
+            ^BOOL(Class c) { return conforms(c, blitEncoder); }, ^id(IMP orig) {
+        return ^(id self, id<MTLTexture> src, NSUInteger ss, NSUInteger sl, MTLOrigin so, MTLSize sz,
+                 id<MTLTexture> dst, NSUInteger ds, NSUInteger dl, MTLOrigin dor) {
+            if (diagActive() && isDrawableTexture(dst))
+                lsfg_log(@"diag blit copy into drawable from %@ on %@", describeTexture(src), threadName());
+            ((void (*)(id, SEL, id, NSUInteger, NSUInteger, MTLOrigin, MTLSize, id, NSUInteger, NSUInteger, MTLOrigin))orig)(
+                self, @selector(copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:),
+                src, ss, sl, so, sz, dst, ds, dl, dor);
+        };
+    });
+    hookAll(@selector(copyFromTexture:toTexture:), ^BOOL(Class c) { return conforms(c, blitEncoder); }, ^id(IMP orig) {
+        return ^(id self, id<MTLTexture> src, id<MTLTexture> dst) {
+            if (diagActive() && isDrawableTexture(dst))
+                lsfg_log(@"diag blit copy (whole) into drawable from %@ on %@", describeTexture(src), threadName());
+            ((void (*)(id, SEL, id, id))orig)(self, @selector(copyFromTexture:toTexture:), src, dst);
+        };
+    });
+    hookAll(@selector(setTexture:atIndex:), ^BOOL(Class c) { return conforms(c, computeEncoder); }, ^id(IMP orig) {
+        return ^(id self, id<MTLTexture> t, NSUInteger index) {
+            if (diagActive() && isDrawableTexture(t))
+                lsfg_log(@"diag compute pass binds drawable at index %lu on %@", (unsigned long)index, threadName());
+            ((void (*)(id, SEL, id, NSUInteger))orig)(self, @selector(setTexture:atIndex:), t, index);
+        };
+    });
     lsfg_log(@"present hooks installed");
 }
 
@@ -176,11 +267,30 @@ static void installLayerHook(void) {
     }, ^id(IMP orig) {
         return ^id(id self) {
             // The GPU driver's command-buffer classes only exist once the game has a device,
-            // which is certainly true by the first nextDrawable.
+            // which is certainly true by the first nextDrawable. Scanning every class takes
+            // about a second, so do it off the game's present path.
             static dispatch_once_t once;
-            dispatch_once(&once, ^{ installPresentHooks(); });
-            bump(kNextDrawable);
-            return ((id (*)(id, SEL))orig)(self, @selector(nextDrawable));
+            dispatch_once(&once, ^{
+                dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ installPresentHooks(); });
+            });
+            // WineMetalLayer's nextDrawable calls super: only the outermost call counts.
+            static _Thread_local int depth;
+            if (depth++ == 0) {
+                bump(kNextDrawable);
+                // Frame generation must read the drawable; framebufferOnly forbids that.
+                CAMetalLayer *layer = self;
+                if (layer.framebufferOnly && !(getenv("LSFG_READABLE") && getenv("LSFG_READABLE")[0] == '0')) {
+                    layer.framebufferOnly = NO;
+                    lsfg_log(@"set framebufferOnly = NO on %@ %p", NSStringFromClass([self class]), (__bridge void *)self);
+                }
+            }
+            id<CAMetalDrawable> drawable = ((id (*)(id, SEL))orig)(self, @selector(nextDrawable));
+            if (--depth == 0 && drawable) {
+                drawableTextures[atomic_fetch_add(&drawableIndex, 1) % 8] = (__bridge void *)drawable.texture;
+                if (diagActive())
+                    lsfg_log(@"diag nextDrawable -> texture %@ on %@", describeTexture(drawable.texture), threadName());
+            }
+            return drawable;
         };
     });
 }
