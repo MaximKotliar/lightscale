@@ -7,6 +7,14 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 APP="$ROOT/build/LSFG Metal.app"
 
 "$ROOT/hook/build.sh" >/dev/null
+# Pre-baked kernels (no weights inside) from this Mac's Lossless.dll, if there is one.
+rm -rf "$ROOT/hook/build/baked"
+if swift run --package-path "$ROOT" -c release -q lsfg-metal bake --out "$ROOT/hook/build/baked" >/dev/null 2>&1; then
+    echo "baked kernels included"
+else
+    rm -rf "$ROOT/hook/build/baked"
+    echo "no Lossless.dll or spirv-cross here: building without pre-baked kernels (the app translates on first run)"
+fi
 swift build --package-path "$ROOT" -c release --product LSFGMetal >/dev/null
 BIN=$(swift build --package-path "$ROOT" -c release --product LSFGMetal --show-bin-path)
 
@@ -16,6 +24,7 @@ cp "$BIN/LSFGMetal" "$APP/Contents/MacOS/LSFGMetal"
 for f in lsfghook.dll lsfghook.so lsfghook.placeholder.dll liblsfgbridge.dylib dinput8.dll version.dll; do
     cp "$ROOT/hook/build/$f" "$APP/Contents/Resources/Hook/"
 done
+[ -d "$ROOT/hook/build/baked" ] && cp -R "$ROOT/hook/build/baked" "$APP/Contents/Resources/Hook/baked"
 VERSION=$(git -C "$ROOT" describe --always --dirty 2>/dev/null || echo dev)
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

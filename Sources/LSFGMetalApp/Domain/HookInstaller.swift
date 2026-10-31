@@ -67,6 +67,9 @@ enum HookInstaller {
         for file in ["lsfghook.dll", "lsfghook.so", "liblsfgbridge.dylib"] {
             try replace(HookFiles.builtinDir.appending(path: file), with: source.appending(path: file))
         }
+        // Pre-baked kernels, when the app was built with them.
+        let baked = source.appending(path: "baked")
+        if fm.fileExists(atPath: baked.path) { try replace(HookFiles.builtinDir.appending(path: "baked"), with: baked) }
         try setUpBottle(game.bottle, source: source)
         try replace(game.folder.appending(path: proxy.fileName), with: source.appending(path: proxy.fileName))
         try await crossOver.reg(["add", overrideKey(game), "/v", proxy.rawValue, "/d", "native,builtin", "/f"], in: game.bottle)
