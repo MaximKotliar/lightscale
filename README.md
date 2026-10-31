@@ -18,6 +18,7 @@ Only for people who own [Lossless Scaling on Steam](https://store.steampowered.c
 | Translate all 300 to one `lsfg.metallib` and build Metal pipelines | done |
 | LSFG 3.1 pass graph on Metal (quality and performance modes), two-frame CLI | done |
 | Sustained benchmark and Mac feasibility ([docs/performance.md](docs/performance.md)) | done |
+| Real game footage, TLOU2 ([docs/real-footage.md](docs/real-footage.md)) | done: beats a blend on 230/235 frames by about 8–9 dB |
 | Hand-tuned kernels, game interposition | next |
 
 First results on an M4 Max (synthetic pair: photo panned 16 px plus a disc moving 120 px):
