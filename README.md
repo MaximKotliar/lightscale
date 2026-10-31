@@ -40,8 +40,8 @@ Sustained GPU cost per real frame at 2× on an M4 Max: 0.4–2.0 ms at 1080p–1
 `scripts/build-app.sh` builds **LSFG Metal.app** (`build/LSFG Metal.app`):
 
 - **First launch:** a one-time setup checklist (Apple silicon, CrossOver, your Steam copy of Lossless Scaling, the frame-generation kernels, the game hook). After that, setup only reappears as a small banner if something breaks, for example after a Lossless Scaling update. **Check Setup…** (⇧⌘,) opens it any time.
-- **Games:** Steam games from every CrossOver bottle, plus any `.exe` you add. Install picks the right proxy DLL from the game's imports. Games with anti-cheat, 32-bit games, and folders where another mod uses the proxy name are explained and left alone.
-- **Per-game profiles:** frame generation on or off, performance or quality mode, motion detail and pacing buffer for each game. They're stored in `~/Library/Application Support/lsfg-metal/profiles.json` and read by the hook when the game starts.
+- **Games:** Steam games from every CrossOver bottle, plus any `.exe` you add with **Add Game** (remembered across launches; right-click to remove). Install picks the right proxy DLL from the game's imports. Games with anti-cheat, 32-bit games, and folders where another mod uses the proxy name are explained and left alone.
+- **Per-game profiles:** frame rate Off / 2× / 4×, performance or quality mode, motion detail and pacing buffer for each game. They're stored in `~/Library/Application Support/lsfg-metal/profiles.json` and read by the hook when the game starts.
 - **Now Playing:** while a hooked game runs, its page shows game fps → on-screen fps, frame time and a 60-second chart.
 
 The app isn't sandboxed, because it edits CrossOver bottles and runs CrossOver's `wine`. It's built with the hardened runtime and no extra entitlements.

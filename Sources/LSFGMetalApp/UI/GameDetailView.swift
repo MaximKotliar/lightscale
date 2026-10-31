@@ -38,7 +38,7 @@ private struct Header: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 14) {
-            GameTile(name: game.name, size: 52)
+            GameIcon(game: game, size: 56)
             VStack(alignment: .leading, spacing: 4) {
                 Text(game.name).font(.title2.weight(.semibold))
                 Text("\(game.bottle.name) · \(game.exe.lastPathComponent)")
@@ -75,24 +75,16 @@ private struct ProfileCard: View {
 
     var body: some View {
         Card(title: "Frame Generation") {
-            Toggle(isOn: profile.enabled) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Double the frame rate")
-                    Text("Cap the game at half your display's refresh rate for the smoothest result.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            .toggleStyle(.switch)
+            MultiplierRow(level: profile.level)
             Divider()
             Group {
-                LabeledContent("Mode") {
+                SettingRow(title: "Mode") {
                     Picker("Mode", selection: profile.performance) {
                         Text("Performance").tag(true)
                         Text("Quality").tag(false)
                     }
                     .pickerStyle(.segmented)
                     .labelsHidden()
-                    .frame(width: 220)
                 }
                 SliderRow(title: "Motion detail", value: profile.flowScale, range: 0.25...1, step: 0.05) {
                     "\(Int(($0 * 100).rounded()))%"
@@ -112,6 +104,37 @@ private struct ProfileCard: View {
     }
 }
 
+/// Off / 2× / 4× as one three-stop slider.
+private struct MultiplierRow: View {
+    @Binding var level: Int
+    @State private var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+
+    private static let names = ["Off", "2×", "4×"]
+
+    private var hint: String {
+        switch level {
+        case 0: "The game runs as usual."
+        case 1: "Cap the game at half your display's refresh rate for the smoothest result."
+        default: lowPower
+            ? "Low Power Mode limits the display to 60 Hz, so you'll see 2×. Turn it off for 4×."
+            : "Needs a 120 Hz display. Cap the game at a quarter of the refresh rate (30 fps)."
+        }
+    }
+
+    var body: some View {
+        SettingRow(title: "Frame rate", caption: hint, warn: level == 2 && lowPower) {
+            HStack(spacing: 10) {
+                // Continuous track (matches the other sliders) that snaps to Off / 2× / 4×.
+                Slider(value: Binding(get: { Double(level) }, set: { level = Int($0.rounded()) }), in: 0...2)
+                Text(Self.names[level]).monospacedDigit().foregroundStyle(.secondary).frame(width: 44, alignment: .trailing)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)) { _ in
+            lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+        }
+    }
+}
+
 private struct SliderRow: View {
     let title: String
     @Binding var value: Double
@@ -120,13 +143,37 @@ private struct SliderRow: View {
     let format: (Double) -> String
 
     var body: some View {
-        LabeledContent(title) {
+        SettingRow(title: title) {
             HStack(spacing: 10) {
                 // Continuous slider (a stepped one draws a row of tick marks); the value snaps to `step`.
                 Slider(value: Binding(get: { value }, set: { value = ($0 / step).rounded() * step }), in: range)
-                    .frame(width: 170)
                 Text(format(value)).monospacedDigit().foregroundStyle(.secondary).frame(width: 44, alignment: .trailing)
             }
+        }
+    }
+}
+
+/// One settings line: title (and optional caption) on the left, the control in a fixed right column,
+/// so every control in the card lines up.
+private struct SettingRow<Control: View>: View {
+    let title: String
+    var caption: String? = nil
+    var warn = false
+    @ViewBuilder let control: Control
+
+    var body: some View {
+        HStack(alignment: caption == nil ? .center : .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                if let caption {
+                    Text(caption)
+                        .font(.caption)
+                        .foregroundStyle(warn ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 0)
+            control.frame(width: 280)
         }
     }
 }

@@ -39,7 +39,7 @@ cp "$OUT/lsfghook.dll" "$OUT/lsfghook.placeholder.dll"
 printf 'Wine placeholder DLL\0' | dd of="$OUT/lsfghook.placeholder.dll" bs=1 seek=64 conv=notrunc status=none
 
 clang -arch x86_64 -dynamiclib -O2 -Wall -fobjc-arc -mmacosx-version-min=14.0 \
-    -framework Foundation -framework Metal -framework QuartzCore \
+    -framework AppKit -framework Foundation -framework Metal -framework QuartzCore \
     -o "$OUT/lsfghook.so" unix/lsfghook_unix.m
 codesign -s - -f "$OUT/lsfghook.so" 2>/dev/null
 

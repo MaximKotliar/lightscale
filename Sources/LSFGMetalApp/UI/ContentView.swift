@@ -8,7 +8,8 @@ struct ContentView: View {
             if model.hasCompletedSetup {
                 NavigationSplitView {
                     GameListView(model: model)
-                        .navigationSplitViewColumnWidth(min: 210, ideal: 230)
+                        .navigationSplitViewColumnWidth(230)
+                        .toolbar(removing: .sidebarToggle)
                 } detail: {
                     Group {
                         if let game = model.selectedGame {

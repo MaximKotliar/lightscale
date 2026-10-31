@@ -20,6 +20,8 @@ struct Game: Identifiable, Hashable, Sendable {
     let bottle: Bottle
     let exe: URL
     var status: Status
+    /// Added by hand with Add Game (not found by the Steam scan).
+    var isCustom = false
 
     var id: URL { exe }
     var folder: URL { exe.deletingLastPathComponent() }

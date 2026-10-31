@@ -18,7 +18,8 @@ D3DMetal draws each finished frame into a drawable with one render pass, commits
 
 - **On commit:** appends to that same command buffer, so the GPU runs it after the game's work. It copies the frame into LSFG, runs LSFG 3.1 (the `LSFGBridge` engine, `liblsfgbridge.dylib`, with shaders from your own `Lossless.dll`), and copies the real and generated frames into a small ring of textures.
 - **On present:** doesn't present the game's drawable. The game gets it back immediately, so frame generation can never slow the game down.
-- **On our own overlay layer** (a `CAMetalLayer` on top of the game's layer): once the GPU finishes, a presenter queue shows the generated frame, then the real one, half a real-frame interval apart. It uses `presentDrawable:atTime:` on a steady cadence with an 8 ms buffer, so the game's frame-time jitter doesn't reach the screen.
+- **On our own overlay layer** (a `CAMetalLayer` on top of the game's layer): once the GPU finishes, the generated frames and the real one are queued evenly across one real-frame interval, on a steady cadence with an 8 ms buffer, so the game's frame-time jitter doesn't reach the screen. A `CAMetalDisplayLink` on its own thread shows the newest frame due at each display refresh.
+- **2× or 4×:** with 4× the hook generates three frames per real one. When the display can't show them all (60 Hz, or Low Power Mode, which caps the display at 60 Hz), it picks evenly spaced frames, so 4× falls back to a clean 2× instead of dropping frames.
 
 Things that didn't work, and why (useful for other games):
 
@@ -50,8 +51,9 @@ Cap the game at half your display's refresh rate (30 on 60 Hz, 60 on 120 Hz, or 
 Per-game profiles live in `~/Library/Application Support/lsfg-metal/profiles.json`, and LSFG Metal.app edits them:
 
 ```json
-{ "default": { "enabled": true, "performance": true, "flowScale": 1.0, "bufferMs": 8 },
-  "games": { "witcher3.exe": { "enabled": true, "performance": false, "flowScale": 0.75, "bufferMs": 8 } } }
+{ "default": { "enabled": true, "multiplier": 2, "performance": true, "flowScale": 1.0, "bufferMs": 8 },
+  "games": { "witcher3.exe": { "enabled": true, "multiplier": 4, "performance": false, "flowScale": 0.75, "bufferMs": 8 } },
+  "custom": [] }
 ```
 
 The hook reads them when the game starts, matching on the exe name. These environment variables override them (for example in the bottle's `[EnvironmentVariables]`):
@@ -60,6 +62,7 @@ The hook reads them when the game starts, matching on the exe name. These enviro
 | --- | --- | --- |
 | `LSFG_ENABLE=0` | on | Load, but install no hooks |
 | `LSFG_FG=0` | on | Observe only (logging), no frame generation |
+| `LSFG_MULTIPLIER` | 2 | Frames on screen per real frame: 2 or 4 (3 also works) |
 | `LSFG_PERFORMANCE=0` | performance | LSFG quality mode |
 | `LSFG_FLOW_SCALE` | 1.0 | Motion-estimation resolution, 0.25–1.0 |
 | `LSFG_BUFFER_MS` | 8 | Scheduling headroom: higher is smoother, lower has less lag |

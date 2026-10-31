@@ -21,14 +21,36 @@ import Testing
 
 @Test func profilesEncodeTheKeysTheHookReads() throws {
     var file = ProfileFile()
-    file.games["witcher3.exe"] = GameProfile(enabled: false, performance: false, flowScale: 0.5, bufferMs: 12)
+    file.games["witcher3.exe"] = GameProfile(enabled: false, multiplier: 4, performance: false, flowScale: 0.5, bufferMs: 12)
     let json = try JSONSerialization.jsonObject(with: try JSONEncoder().encode(file)) as? [String: Any]
     let game = (json?["games"] as? [String: Any])?["witcher3.exe"] as? [String: Any]
     #expect(game?["enabled"] as? Bool == false)
     #expect(game?["performance"] as? Bool == false)
     #expect(game?["flowScale"] as? Double == 0.5)
     #expect(game?["bufferMs"] as? Double == 12)
+    #expect(game?["multiplier"] as? Int == 4)
     #expect(json?["default"] != nil)
+}
+
+@Test func profileLevelMapsToEnabledAndMultiplier() {
+    var p = GameProfile()
+    #expect(p.level == 1)
+    p.level = 2
+    #expect(p.enabled && p.multiplier == 4)
+    p.level = 0
+    #expect(!p.enabled && p.level == 0)
+    p.level = 1
+    #expect(p.enabled && p.multiplier == 2)
+}
+
+@Test func olderProfileFilesStillLoad() throws {
+    // Written before `multiplier` and `custom` existed.
+    let json = #"{"default":{"enabled":true,"performance":true,"flowScale":1,"bufferMs":8},"games":{"a.exe":{"enabled":false}}}"#
+    let file = try JSONDecoder().decode(ProfileFile.self, from: Data(json.utf8))
+    #expect(file.default.multiplier == 2)
+    #expect(file.games["a.exe"]?.enabled == false)
+    #expect(file.games["a.exe"]?.bufferMs == 8)
+    #expect(file.custom.isEmpty)
 }
 
 /// Full install and uninstall through the app's code, against the throwaway test bottle

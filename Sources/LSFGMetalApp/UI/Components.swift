@@ -1,5 +1,41 @@
 import AppKit
+import LSFGCore
 import SwiftUI
+
+/// Game icons read from each .exe, cached (as .ico data, which is Sendable).
+actor GameIcons {
+    static let shared = GameIcons()
+    private var cache: [URL: Data?] = [:]
+
+    func ico(for exe: URL) -> Data? {
+        if let cached = cache[exe] { return cached }
+        let data = (try? Data(contentsOf: exe, options: .mappedIfSafe)).flatMap { try? PEFile.icon(in: $0) }
+        cache[exe] = data
+        return data
+    }
+}
+
+/// The game's own icon, or a letter tile while loading or when it has none.
+struct GameIcon: View {
+    let game: Game
+    var size: CGFloat = 28
+    @State private var image: NSImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
+            } else {
+                GameTile(name: game.name, size: size)
+            }
+        }
+        .frame(width: size, height: size)
+        .task(id: game.exe) {
+            let data = await GameIcons.shared.ico(for: game.exe)
+            image = data.flatMap(NSImage.init(data:))
+        }
+    }
+}
 
 /// Rounded tile with a game's initial on a color derived from its name.
 struct GameTile: View {

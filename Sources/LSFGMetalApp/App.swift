@@ -15,12 +15,13 @@ struct LSFGMetalApp: App {
     }
 
     var body: some Scene {
+        // One fixed-size window: no fullscreen, no zoom, nothing to stretch.
         Window("LSFG Metal", id: "main") {
             ContentView(model: model)
-                .frame(minWidth: 720, minHeight: 480)
+                .frame(width: 860, height: 560)
+                .background(FixedWindow())
         }
-        .defaultSize(width: 860, height: 560)
-        .windowResizability(.contentMinSize)
+        .windowResizability(.contentSize)
         .commands {
             CommandGroup(after: .appSettings) {
                 Button("Check Setup…") { model.showingSetup = true }

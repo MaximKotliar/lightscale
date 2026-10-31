@@ -65,7 +65,7 @@ int main(void) {
             [[cb renderCommandEncoderWithDescriptor:rp] endEncoding];
             [cb commit];
             [d present];
-            if (CACurrentMediaTime() - start > 6) { [t invalidate]; [NSApp terminate:nil]; }
+            if (CACurrentMediaTime() - start > (getenv("FAKE_SECONDS") ? atof(getenv("FAKE_SECONDS")) : 6)) { [t invalidate]; [NSApp terminate:nil]; }
         }];
         [NSApp run];
     }

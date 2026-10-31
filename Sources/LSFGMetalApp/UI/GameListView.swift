@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -10,6 +11,13 @@ struct GameListView: View {
             ForEach(model.games) { game in
                 GameRow(game: game, isRunning: model.liveStats(for: game) != nil)
                     .tag(game.id)
+                    .contextMenu {
+                        if game.isCustom {
+                            Button("Remove from List") { model.removeFromList(game) }
+                                .disabled(game.isInstalled)
+                        }
+                        Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([game.exe]) }
+                    }
             }
         }
         .overlay {
@@ -32,6 +40,8 @@ struct GameListView: View {
         .fileImporter(isPresented: $picking, allowedContentTypes: [UTType(filenameExtension: "exe") ?? .data]) { result in
             if case let .success(url) = result { model.addGame(exe: url) }
         }
+        .fileDialogDefaultDirectory(model.addGameStartFolder)
+        .fileDialogMessage("Choose the game's .exe inside a CrossOver bottle")
     }
 }
 
@@ -41,7 +51,7 @@ private struct GameRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            GameTile(name: game.name)
+            GameIcon(game: game)
             VStack(alignment: .leading, spacing: 1) {
                 Text(game.name).lineLimit(1)
                 HStack(spacing: 4) {

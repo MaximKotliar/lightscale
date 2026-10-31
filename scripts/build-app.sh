@@ -25,6 +25,15 @@ for f in lsfghook.dll lsfghook.so lsfghook.placeholder.dll liblsfgbridge.dylib d
     cp "$ROOT/hook/build/$f" "$APP/Contents/Resources/Hook/"
 done
 [ -d "$ROOT/hook/build/baked" ] && cp -R "$ROOT/hook/build/baked" "$APP/Contents/Resources/Hook/baked"
+# App icon, drawn by scripts/make-icon.swift.
+ICONSET="$ROOT/build/AppIcon.iconset"
+rm -rf "$ICONSET" && mkdir -p "$ICONSET"
+swift "$ROOT/scripts/make-icon.swift" "$ICONSET/icon_512x512@2x.png"
+for s in 16 32 128 256 512; do
+    sips -z $s $s "$ICONSET/icon_512x512@2x.png" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
+    sips -z $((s * 2)) $((s * 2)) "$ICONSET/icon_512x512@2x.png" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
+done
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 VERSION=$(git -C "$ROOT" describe --always --dirty 2>/dev/null || echo dev)
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -36,6 +45,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleIdentifier</key><string>dev.lsfg-metal.setup</string>
     <key>CFBundleExecutable</key><string>LSFGMetal</string>
     <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundleShortVersionString</key><string>0.1</string>
     <key>CFBundleVersion</key><string>$VERSION</string>
     <key>LSMinimumSystemVersion</key><string>15.0</string>

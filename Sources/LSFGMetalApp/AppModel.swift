@@ -27,12 +27,20 @@ final class AppModel {
         isChecking = true
         defer { isChecking = false }
         status = await DependencyChecker.run()
-        let scanned = await GameScanner.scan(bottles: Bottle.all())
-        let added = games.filter { g in !scanned.contains { $0.exe == g.exe } }
-            .map { Game(name: $0.name, bottle: $0.bottle, exe: $0.exe, status: GameScanner.status(exe: $0.exe, antiCheat: nil)) }
-        games = (scanned + added).sorted(by: Self.order)
-        if selection == nil || selectedGame == nil { selection = games.first?.id }
         profiles = ProfileFile.load()
+        let bottles = Bottle.all()
+        let scanned = await GameScanner.scan(bottles: bottles)
+        // Games added by hand, if their .exe is still there and inside a bottle.
+        let custom = profiles.custom.map { URL(fileURLWithPath: $0) }
+            .filter { exe in FileManager.default.fileExists(atPath: exe.path) && !scanned.contains { $0.exe == exe } }
+            .compactMap { exe -> Game? in
+                guard let bottle = bottles.first(where: { exe.path.hasPrefix($0.url.path + "/") }) else { return nil }
+                var game = GameScanner.game(exe: exe, bottle: bottle)
+                game.isCustom = true
+                return game
+            }
+        games = (scanned + custom).sorted(by: Self.order)
+        if selection == nil || selectedGame == nil { selection = games.first?.id }
     }
 
     /// Installed games first, then games that can be installed, then the rest; by name within each.
@@ -75,10 +83,31 @@ final class AppModel {
             return
         }
         if !games.contains(where: { $0.exe == exe }) {
-            games.append(GameScanner.game(exe: exe, bottle: bottle))
+            var game = GameScanner.game(exe: exe, bottle: bottle)
+            game.isCustom = true
+            games.append(game)
             games.sort(by: Self.order)
+            var updated = profiles
+            updated.custom.append(exe.path)
+            save(updated)
         }
         selection = exe
+    }
+
+    /// Takes a hand-added game off the list (it must be uninstalled first).
+    func removeFromList(_ game: Game) {
+        guard game.isCustom, !game.isInstalled else { return }
+        games.removeAll { $0.exe == game.exe }
+        var updated = profiles
+        updated.custom.removeAll { $0 == game.exe.path }
+        updated.games[ProfileFile.key(for: game)] = nil
+        save(updated)
+        if selection == game.exe { selection = games.first?.id }
+    }
+
+    /// Where Add Game's file picker starts: inside the first bottle's C: drive.
+    var addGameStartFolder: URL? {
+        Bottle.all().first.map { $0.url.appending(path: "drive_c") }
     }
 
     // MARK: Profiles

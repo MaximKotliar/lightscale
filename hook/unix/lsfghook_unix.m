@@ -17,9 +17,11 @@
 //   LSFG_FLOW_SCALE=F    motion-estimation resolution, 0.25-1.0 (default 1.0)
 //   LSFG_PERFORMANCE=0   use LSFG quality mode (default: performance mode)
 //   LSFG_READABLE=0      leave framebufferOnly alone (disables frame generation)
+//   LSFG_MULTIPLIER=N    2 (default), 3 or 4 frames shown per real frame
 //   LSFG_BUFFER_MS=N     scheduling headroom that absorbs frame-time jitter (default 8 ms)
 //   LSFG_LOG=path        log file (default ~/Library/Logs/lsfg-metal.log)
 
+#import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/QuartzCore.h>
@@ -55,12 +57,12 @@ static void lsfg_log(NSString *fmt, ...) {
 typedef enum {
     kDrawablePresent, kDrawablePresentAtTime, kDrawablePresentAfter,
     kCBPresent, kCBPresentAtTime, kCBPresentAfter,
-    kMTL4Signal, kMTL4Wait, kNextDrawable, kGenerated, kCounterCount
+    kMTL4Signal, kMTL4Wait, kNextDrawable, kGenerated, kLinkUpdates, kCounterCount
 } Counter;
 static const char *counterNames[kCounterCount] = {
     "drawable.present", "drawable.presentAtTime", "drawable.presentAfterMinimumDuration",
     "cmdbuf.presentDrawable", "cmdbuf.presentDrawable:atTime", "cmdbuf.presentDrawable:afterMinimumDuration",
-    "mtl4queue.signalDrawable", "mtl4queue.waitForDrawable", "layer.nextDrawable", "generated",
+    "mtl4queue.signalDrawable", "mtl4queue.waitForDrawable", "layer.nextDrawable", "generated", "link.updates",
 };
 static _Atomic long counters[kCounterCount];
 static _Atomic bool describedLayer;
@@ -97,11 +99,17 @@ static NSMutableSet<NSString *> *hooked;
 // For every class matching `match` that itself implements `sel`, replaces the method with
 // `make(original)`. Each class gets its own block capturing its own original IMP, so
 // subclasses that call super chain correctly.
+// One class list per scan (installPresentHooks sets it); copying it is the slow part.
+static Class *scanClasses;
+static unsigned scanCount;
+
 static void hookAll(SEL sel, BOOL (^match)(Class), id (^make)(IMP original)) {
     os_unfair_lock_lock(&hookLock);
     if (!hooked) hooked = [NSMutableSet set];
-    unsigned count = 0;
-    Class *classes = objc_copyClassList(&count);
+    unsigned count = scanCount;
+    Class *classes = scanClasses;
+    BOOL ownList = classes == NULL;
+    if (ownList) classes = objc_copyClassList(&count);
     for (unsigned i = 0; i < count; i++) {
         Class c = classes[i];
         NSString *key = [NSString stringWithFormat:@"%s|%s", class_getName(c), sel_getName(sel)];
@@ -117,7 +125,7 @@ static void hookAll(SEL sel, BOOL (^match)(Class), id (^make)(IMP original)) {
         [hooked addObject:key];
         lsfg_log(@"hooked -[%s %s]", class_getName(c), sel_getName(sel));
     }
-    free(classes);
+    if (ownList) free(classes);
     os_unfair_lock_unlock(&hookLock);
 }
 
@@ -189,7 +197,8 @@ static CFTimeInterval lastCompletion, frameInterval;      // GPU completion cade
 static CAMetalLayer *overlay;
 static _Atomic int overlayState;          // 0 none, 1 attaching, 2 ready, -1 off
 enum { kSlots = 4 };
-static id<MTLTexture> realRing[kSlots], genRing[kSlots];
+enum { kMaxGenerated = 3 };             // 4x: three frames between each pair of real frames
+static id<MTLTexture> realRing[kSlots], genRing[kSlots][kMaxGenerated];
 static dispatch_semaphore_t slotsFree;
 static int nextSlot;
 static id<MTLCommandQueue> presentQueue;
@@ -220,7 +229,7 @@ static void trackPresented(id<CAMetalDrawable> d) {
 }
 
 // The effective settings for this game: defaults, then profiles.json, then environment.
-static struct { BOOL enabled, performance; float flowScale, bufferMs; } config = { YES, YES, 1.0f, 8.0f };
+static struct { BOOL enabled, performance; int multiplier; float flowScale, bufferMs; } config = { YES, YES, 2, 1.0f, 8.0f };
 
 static void applyProfile(NSDictionary *p) {
     if (![p isKindOfClass:NSDictionary.class]) return;
@@ -228,6 +237,7 @@ static void applyProfile(NSDictionary *p) {
     if ([p[@"performance"] isKindOfClass:NSNumber.class]) config.performance = [p[@"performance"] boolValue];
     if ([p[@"flowScale"] isKindOfClass:NSNumber.class]) config.flowScale = [p[@"flowScale"] floatValue];
     if ([p[@"bufferMs"] isKindOfClass:NSNumber.class]) config.bufferMs = [p[@"bufferMs"] floatValue];
+    if ([p[@"multiplier"] isKindOfClass:NSNumber.class]) config.multiplier = [p[@"multiplier"] intValue];
 }
 
 static void loadConfig(void) {
@@ -245,9 +255,11 @@ static void loadConfig(void) {
     if ((v = getenv("LSFG_PERFORMANCE"))) config.performance = v[0] != '0';
     if ((v = getenv("LSFG_FLOW_SCALE"))) config.flowScale = (float)atof(v);
     if ((v = getenv("LSFG_BUFFER_MS"))) config.bufferMs = (float)atof(v);
+    if ((v = getenv("LSFG_MULTIPLIER"))) config.multiplier = atoi(v);
+    config.multiplier = MAX(2, MIN(config.multiplier, kMaxGenerated + 1));
     config.flowScale = fminf(fmaxf(config.flowScale, 0.25f), 1.0f);
     config.bufferMs = fminf(fmaxf(config.bufferMs, 0.0f), 50.0f);
-    lsfg_log(@"profile for %@: frame generation %s, %s mode, flow %.2f, buffer %.0f ms", exe, config.enabled ? "on" : "off",
+    lsfg_log(@"profile for %@: frame generation %s %dx, %s mode, flow %.2f, buffer %.0f ms", exe, config.enabled ? "on" : "off", config.multiplier,
              config.performance ? "performance" : "quality", config.flowScale, config.bufferMs);
 }
 
@@ -281,7 +293,7 @@ static void fgCreateContext(id<MTLDevice> device, id<MTLTexture> frame) {
         float flow = config.flowScale;
         BOOL perf = config.performance;
         CFTimeInterval t0 = CACurrentMediaTime();
-        void *ctx = bridge.create((__bridge const void *)device, (int)w, (int)h, (unsigned)format, 2, flow, perf, error, sizeof error);
+        void *ctx = bridge.create((__bridge const void *)device, (int)w, (int)h, (unsigned)format, config.multiplier, flow, perf, error, sizeof error);
         if (!ctx) {
             lsfg_log(@"frame generation off: %s", error);
             atomic_store(&fgState, -1);
@@ -290,7 +302,10 @@ static void fgCreateContext(id<MTLDevice> device, id<MTLTexture> frame) {
         MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format width:w height:h mipmapped:NO];
         d.usage = MTLTextureUsageShaderRead;
         d.storageMode = MTLStorageModePrivate;
-        for (int i = 0; i < kSlots; i++) { realRing[i] = [device newTextureWithDescriptor:d]; genRing[i] = [device newTextureWithDescriptor:d]; }
+        for (int i = 0; i < kSlots; i++) {
+            realRing[i] = [device newTextureWithDescriptor:d];
+            for (int j = 0; j < config.multiplier - 1; j++) genRing[i][j] = [device newTextureWithDescriptor:d];
+        }
         presentQueue = [device newCommandQueue];
         presenter = dispatch_queue_create("lsfg.presenter", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
         slotsFree = dispatch_semaphore_create(kSlots);
@@ -301,6 +316,8 @@ static void fgCreateContext(id<MTLDevice> device, id<MTLTexture> frame) {
                  (unsigned long)h, (unsigned long)format, flow, perf ? "performance" : "quality", CACurrentMediaTime() - t0);
     });
 }
+
+static void startDisplayLink(CAMetalLayer *layer);
 
 // Puts our overlay layer on top of the game's layer (main thread; ready a moment later).
 static void attachOverlay(CAMetalLayer *game) {
@@ -326,6 +343,7 @@ static void attachOverlay(CAMetalLayer *game) {
         [game addSublayer:o];
         [CATransaction commit];
         overlay = o;
+        startDisplayLink(o);
         atomic_store(&overlayState, 2);
         lsfg_log(@"overlay attached: %.0fx%.0f on %@", o.drawableSize.width, o.drawableSize.height, NSStringFromClass([game class]));
     });
@@ -333,62 +351,128 @@ static void attachOverlay(CAMetalLayer *game) {
 
 static BOOL traceOn(void) { static int on = -1; if (on < 0) on = envOn("LSFG_TRACE", NO); return on; }
 
-// Presenter queue: shows ring slot `slot` (generated frame first, if any, then the real one).
-// Both are presented by our command buffer once it is scheduled (presentDrawable:atTime:);
-// presentAtTime: before the GPU finishes drops frames.
-//
+// Presentation is driven by a CAMetalDisplayLink on the overlay: once per display refresh it
+// hands us a drawable due for that refresh, and we show the newest queued frame whose time has
+// come. Frames (generated ones, then the real one) are queued when the GPU finishes them, at times
+// on a steady cadence. Nothing holds drawables ahead of time and nothing hand-times presents, so
+// the game is never throttled and pacing locks to the real refresh. (Timed presents with the
+// overlay's 3 drawables capped 4x at ~60 fps or dropped every frame.)
+typedef struct { int slot; int index; CFTimeInterval at; } QueuedFrame; // index == -1: real frame
+enum { kQueueCapacity = 64 };
+static QueuedFrame frameQueue[kQueueCapacity];
+static int queueHead, queueCount;
+static int slotRemaining[kSlots];               // frames of a slot not yet shown or skipped
+static os_unfair_lock queueLock = OS_UNFAIR_LOCK_INIT;
+static CAMetalDisplayLink *displayLink;
+// The display link's own clock: when its latest refresh will appear, and the refresh interval.
+// Frames are scheduled against this, since an update's target lies a few refreshes in the future.
+static _Atomic double linkTarget, linkInterval;
+
+// A frame is done (shown and copied, or skipped). The slot's textures are reusable after its last.
+static void releaseFrameLocked(QueuedFrame f) {
+    if (--slotRemaining[f.slot] == 0) dispatch_semaphore_signal(slotsFree);
+}
+
 // Display times follow a steady cadence: each frame continues from the previous real frame's
-// target (+ half an interval), so the game's frame-time jitter doesn't reach the screen. The
-// cadence only snaps to "now" when frames arrive too late, and never runs more than one
-// interval ahead (bounded latency).
+// target, so the game's frame-time jitter doesn't reach the screen. The cadence only snaps to
+// "now" when frames arrive too late, and never runs far ahead (bounded latency).
 static CFTimeInterval lastRealTarget;
-static void presentSlot(int slot, BOOL hasGenerated, CFTimeInterval completedAt) {
-    CAMetalLayer *o = overlay;
-    id<MTLCommandBuffer> cb = [presentQueue commandBuffer];
-    CFTimeInterval period = MIN(frameInterval > 0 ? frameInterval : 1.0 / 30, 0.1), half = period / 2;
-    // Scheduling a little ahead absorbs the game's frame-time jitter (and gives the compositor
-    // time): frames that arrive up to `buffer` late still land on the cadence.
+static void presentSlot(int slot, int generated, CFTimeInterval completedAt) {
+    CFTimeInterval period = MIN(frameInterval > 0 ? frameInterval : 1.0 / 30, 0.1);
+    // Show only as many frames per real frame as the display can: Low Power Mode caps ProMotion
+    // displays at 60 Hz while still reporting (and ticking the display link at) 120. Pick the
+    // generated frames evenly, e.g. 4x at 30 fps on 60 Hz shows the middle one: a clean 2x.
+    double refresh = MAX(atomic_load(&linkInterval), NSProcessInfo.processInfo.lowPowerModeEnabled ? 1.0 / 60 : 0);
+    int fit = refresh > 0 ? MAX(1, (int)llround(period / refresh)) : generated + 1;
+    int shown = MIN(generated + 1, fit);
+    int picks[kMaxGenerated + 1];
+    for (int k = 1; k < shown; k++) picks[k - 1] = (int)llround((double)k * (generated + 1) / shown) - 1;
+    picks[shown - 1] = -1; // the real frame
+    CFTimeInterval step = period / shown;
     static double buffer = -1;
     if (buffer < 0) buffer = config.bufferMs / 1000.0;
-    CFTimeInterval earliest = CACurrentMediaTime() + 0.003;
-    CFTimeInterval step = hasGenerated ? half : period;
+    // Earliest a new frame can appear: the refresh after the link's latest one.
+    double target = atomic_load(&linkTarget);
+    CFTimeInterval earliest = target > 0 ? target + (refresh > 0 ? refresh : 1.0 / 120) : CACurrentMediaTime() + 0.003;
     CFTimeInterval first = lastRealTarget > 0 ? lastRealTarget + step : earliest;
-    if (first < earliest) first = earliest + buffer;             // fell behind: restart the cadence
-    if (first > earliest + buffer + half) first = earliest + buffer; // drifted ahead: pull latency back in
-    CFTimeInterval realAt = hasGenerated ? first + half : first;
-    lastRealTarget = realAt;
-
-    id<CAMetalDrawable> g = nil, r = nil;
-    if (hasGenerated && (g = [o nextDrawable])) {
-        id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
-        [blit copyFromTexture:genRing[slot] toTexture:g.texture];
-        [blit endEncoding];
-        trackPresented(g);
-        [cb presentDrawable:g atTime:first];
-        bump(kGenerated);
-    }
-    if ((r = [o nextDrawable])) {
-        id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
-        [blit copyFromTexture:realRing[slot] toTexture:r.texture];
-        [blit endEncoding];
-        trackPresented(r);
-        [cb presentDrawable:r atTime:realAt];
-    }
+    if (first < earliest) first = earliest + buffer;                       // fell behind: restart the cadence
+    if (first > earliest + buffer + period / 2) first = earliest + buffer; // drifted ahead: pull latency back in
+    lastRealTarget = first + (shown - 1) * step;
     if (traceOn()) {
         static int n;
-        if (n++ < 12) lsfg_log(@"trace slot %d: %.1f ms after GPU completion, generated at +%.1f, real at +%.1f ms (half %.1f)",
-                               slot, (CACurrentMediaTime() - completedAt) * 1000, (first - CACurrentMediaTime()) * 1000,
-                               (realAt - CACurrentMediaTime()) * 1000, half * 1000);
+        if (n++ < 12) lsfg_log(@"trace slot %d: %.1f ms after GPU completion, %d generated from +%.1f ms, step %.1f ms",
+                               slot, (CACurrentMediaTime() - completedAt) * 1000, generated,
+                               (first - CACurrentMediaTime()) * 1000, step * 1000);
     }
-    static int traced;
-    BOOL trace = traceOn() && traced++ < 40;
-    CFTimeInterval committed = CACurrentMediaTime();
+    os_unfair_lock_lock(&queueLock);
+    slotRemaining[slot] = shown;
+    for (int i = 0; i < shown && queueCount < kQueueCapacity; i++) {
+        frameQueue[(queueHead + queueCount++) % kQueueCapacity] = (QueuedFrame){ slot, picks[i], first + i * step };
+    }
+    os_unfair_lock_unlock(&queueLock);
+}
+
+@interface LSFGDisplayLinkTarget : NSObject <CAMetalDisplayLinkDelegate>
+@end
+
+@implementation LSFGDisplayLinkTarget
+- (void)metalDisplayLink:(CAMetalDisplayLink *)link needsUpdate:(CAMetalDisplayLinkUpdate *)update {
+    bump(kLinkUpdates);
+    CFTimeInterval now = update.targetPresentationTimestamp, previous = atomic_exchange(&linkTarget, now);
+    if (previous > 0 && now > previous && now - previous < 0.05) {
+        double interval = atomic_load(&linkInterval);
+        atomic_store(&linkInterval, interval > 0 ? interval * 0.9 + (now - previous) * 0.1 : now - previous);
+    }
+    // Show the newest frame due by this refresh (half a refresh of slack); skip older ones.
+    double refresh = atomic_load(&linkInterval);
+    CFTimeInterval due = now + (refresh > 0 ? refresh / 2 : 0.004);
+    BOOL found = NO;
+    QueuedFrame show = {0};
+    os_unfair_lock_lock(&queueLock);
+    while (queueCount > 0 && frameQueue[queueHead].at <= due) {
+        if (found) releaseFrameLocked(show); // superseded before it reached the screen
+        show = frameQueue[queueHead];
+        found = YES;
+        queueHead = (queueHead + 1) % kQueueCapacity;
+        queueCount--;
+    }
+    os_unfair_lock_unlock(&queueLock);
+    if (!found) return; // nothing new: the previous frame stays on screen
+
+    id<CAMetalDrawable> drawable = update.drawable;
+    id<MTLCommandBuffer> cb = [presentQueue commandBuffer];
+    id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+    [blit copyFromTexture:show.index < 0 ? realRing[show.slot] : genRing[show.slot][show.index] toTexture:drawable.texture];
+    [blit endEncoding];
+    trackPresented(drawable);
+    [cb presentDrawable:drawable];
     [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
-        if (trace) lsfg_log(@"trace copy cb: gpu start +%.1f end +%.1f ms after commit; first target at +%.1f",
-                            (done.GPUStartTime - committed) * 1000, (done.GPUEndTime - committed) * 1000, (first - committed) * 1000);
-        dispatch_semaphore_signal(slotsFree);
+        os_unfair_lock_lock(&queueLock);
+        releaseFrameLocked(show);
+        os_unfair_lock_unlock(&queueLock);
     }];
     [cb commit];
+    if (show.index >= 0) bump(kGenerated);
+}
+@end
+
+// Runs the display link on its own thread (not the game's, not Wine's main thread).
+static void startDisplayLink(CAMetalLayer *layer) {
+    static LSFGDisplayLinkTarget *target;
+    target = [LSFGDisplayLinkTarget new];
+    NSThread *thread = [[NSThread alloc] initWithBlock:^{
+        displayLink = [[CAMetalDisplayLink alloc] initWithMetalLayer:layer];
+        displayLink.delegate = target;
+        // Ask for the display's full rate: 4x needs every refresh of a 120 Hz screen.
+        float maxRate = 120;
+        for (NSScreen *screen in NSScreen.screens) maxRate = MAX(maxRate, (float)screen.maximumFramesPerSecond);
+        displayLink.preferredFrameRateRange = CAFrameRateRangeMake(maxRate, maxRate, maxRate);
+        [displayLink addToRunLoop:NSRunLoop.currentRunLoop forMode:NSDefaultRunLoopMode];
+        while (true) @autoreleasepool { [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:NSDate.distantFuture]; }
+    }];
+    thread.name = @"lsfg.displaylink";
+    thread.qualityOfService = NSQualityOfServiceUserInteractive;
+    [thread start];
 }
 
 // Commit hook, for the command buffer that renders a real frame into drawable texture `target`.
@@ -419,13 +503,14 @@ static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target) {
     int slot = nextSlot++ % kSlots;
     blit = [cb blitCommandEncoder];
     [blit copyFromTexture:target toTexture:realRing[slot]];
-    if (generated > 0) [blit copyFromTexture:(__bridge id<MTLTexture>)bridge.output(fgContext, 0) toTexture:genRing[slot]];
+    for (int j = 0; j < generated && j < kMaxGenerated; j++)
+        [blit copyFromTexture:(__bridge id<MTLTexture>)bridge.output(fgContext, j) toTexture:genRing[slot][j]];
     [blit endEncoding];
     os_unfair_lock_lock(&capturedLock);
     [captured addObject:@((uintptr_t)(__bridge void *)target)];
     os_unfair_lock_unlock(&capturedLock);
 
-    BOOL hasGenerated = generated > 0;
+    int count = MAX(0, MIN(generated, kMaxGenerated));
     [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
         CFTimeInterval now = CACurrentMediaTime();
         if (lastCompletion > 0) {
@@ -433,7 +518,7 @@ static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target) {
             if (dt > 0.004 && dt < 0.25) frameInterval = frameInterval > 0 ? frameInterval * 0.8 + dt * 0.2 : dt;
         }
         lastCompletion = now;
-        dispatch_async(presenter, ^{ presentSlot(slot, hasGenerated, now); });
+        dispatch_async(presenter, ^{ presentSlot(slot, count, now); });
     }];
 }
 
@@ -451,6 +536,8 @@ static BOOL fgPresent(id<CAMetalDrawable> real) {
 #pragma mark - Hooks
 
 static void installPresentHooks(void) {
+    CFTimeInterval scanStart = CACurrentMediaTime();
+    scanClasses = objc_copyClassList(&scanCount);
     Protocol *drawable = @protocol(CAMetalDrawable), *commandBuffer = @protocol(MTLCommandBuffer);
     BOOL (^isDrawable)(Class) = ^BOOL(Class c) { return conforms(c, drawable); };
     BOOL (^isCommandBuffer)(Class) = ^BOOL(Class c) { return conforms(c, commandBuffer); };
@@ -606,6 +693,10 @@ static void installPresentHooks(void) {
             return enc;
         };
     });
+    free(scanClasses);
+    scanClasses = NULL;
+    scanCount = 0;
+    lsfg_log(@"class scan took %.2fs", CACurrentMediaTime() - scanStart);
     atomic_store(&diagPresents, 0);
     lsfg_log(@"present hooks installed; logging the next %d frames in detail", kDiagFrames);
 }
@@ -623,7 +714,7 @@ static void installLayerHook(void) {
             // about a second, so do it off the game's present path.
             static dispatch_once_t once;
             dispatch_once(&once, ^{
-                dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ installPresentHooks(); });
+                dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ installPresentHooks(); });
             });
             // WineMetalLayer's nextDrawable calls super: only the outermost call counts.
             static _Thread_local int depth;
