@@ -7,7 +7,7 @@ Only for people who own [Lossless Scaling on Steam](https://store.steampowered.c
 ## Architecture
 
 1. **Native Metal network** (current focus): run LSFG 3.1's compute passes on Metal. The DLL's own SPIR-V shaders are auto-translated to Metal first; the hot passes get hand-written kernels later.
-2. **Game interposition** (later): hook the game's presentation in CrossOver and insert generated frames.
+2. **Game interposition**: a hook loaded into the game under CrossOver that inserts generated frames into its presentation. See [hook/README.md](hook/README.md).
 
 ## Status
 
@@ -19,7 +19,8 @@ Only for people who own [Lossless Scaling on Steam](https://store.steampowered.c
 | LSFG 3.1 pass graph on Metal (quality and performance modes), two-frame CLI | done |
 | Sustained benchmark and Mac feasibility ([docs/performance.md](docs/performance.md)) | done |
 | Real game footage, TLOU2 ([docs/real-footage.md](docs/real-footage.md)) | done: beats a blend on 230/235 frames by about 8–9 dB |
-| Hand-tuned kernels, game interposition | next |
+| CrossOver hook: injection, D3DMetal present path, frame insertion ([hook/README.md](hook/README.md)) | working: Witcher 3, 30 → 60 fps on screen |
+| Hand-tuned kernels, 3×/4×, HUD handling, more games | next |
 
 First results on an M4 Max (synthetic pair: photo panned 16 px plus a disc moving 120 px):
 
@@ -68,5 +69,5 @@ Shader translation uses [dxbc-spirv](https://github.com/doitsujin/dxbc-spirv) (M
 
 ## Notes
 
-- CrossOver 26's `wineloader` is x86_64, hardened runtime, with `disable-library-validation` but no `allow-dyld-environment-variables`, so `DYLD_INSERT_LIBRARIES` is ignored. Part 2 needs another way to inject.
+- CrossOver 26's `wineloader` is x86_64, hardened runtime, with `disable-library-validation` but no `allow-dyld-environment-variables`, so `DYLD_INSERT_LIBRARIES` is ignored. The hook gets in through Wine's builtin-DLL mechanism instead (see [hook/README.md](hook/README.md)).
 - The ownership check only confirms that Steam's install files exist. It is not a DRM check.
