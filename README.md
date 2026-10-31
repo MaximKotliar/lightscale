@@ -6,7 +6,7 @@ Only for people who own [Lossless Scaling on Steam](https://store.steampowered.c
 
 ## Architecture
 
-1. **Native Metal network** (current focus): run LSFG's compute passes on Metal. They're auto-translated from the DLL's DXBC shaders first, then the hot passes get hand-written kernels.
+1. **Native Metal network** (current focus): run LSFG 3.1's compute passes on Metal. The DLL's own SPIR-V shaders are auto-translated to Metal first; the hot passes get hand-written kernels later.
 2. **Game interposition** (later): hook the game's presentation in CrossOver and insert generated frames.
 
 ## Status
@@ -14,25 +14,36 @@ Only for people who own [Lossless Scaling on Steam](https://store.steampowered.c
 | Step | State |
 | --- | --- |
 | Find `Lossless.dll` in CrossOver bottles (Steam app 993090) | done |
-| Read 202 SM5.0 compute shaders and their bindings from the DLL | done |
-| DXBC → SPIR-V → MSL → `lsfg.metallib`, all 202 kernels | done |
-| Build Metal pipelines for every kernel | done |
-| LSFG 3 pass graph, two-frame CLI | in progress |
+| Read the DLL's shaders: 202 DXBC (IDs 101–302) and 98 SPIR-V (IDs 303–400, LSFG 3.1) | done |
+| Translate all 300 to one `lsfg.metallib` and build Metal pipelines | done |
+| LSFG 3.1 pass graph on Metal, two-frame CLI | done |
+| Performance mode (3.1p), hand-tuned kernels, game interposition | next |
+
+First results on an M4 Max (synthetic pair: photo panned 16 px plus a disc moving 120 px):
+
+| | PSNR vs true midpoint |
+| --- | --- |
+| LSFG 3.1 on Metal | 32.4 dB (flow 1.0), 33.0 dB (flow 0.5) |
+| 50/50 blend | 21.8 dB |
+| Repeat previous frame | 19.6 dB |
+
+GPU time per real frame with one generated frame (fp16): about 7–10 ms at flow scale 1.0 and 1.5–3.7 ms at 0.5, from 1080p to 4K. These are rough, single-shot numbers.
 
 ## Setup
 
 ```bash
-brew install spirv-cross spirv-tools meson ninja
-git clone https://github.com/doitsujin/dxbc-spirv && cd dxbc-spirv
-meson setup build -Denable_tools=true -Dbuildtype=release && ninja -C build
+brew install spirv-cross spirv-tools
 ```
+
+LSFG 3.1 only needs the SPIR-V shaders. To also translate the DXBC ones (upscalers, older LSFG), build [dxbc-spirv](https://github.com/doitsujin/dxbc-spirv) with `-Denable_tools=true` and set `DXBC_COMPILER` to its `dxbc_compiler`.
 
 Install Lossless Scaling with Steam inside a CrossOver bottle, then:
 
 ```bash
 swift run lsfg-metal locate                       # find Lossless.dll
-DXBC_COMPILER=/path/to/dxbc-spirv/build/tools/dxbc_compiler scripts/translate-shaders.sh
+scripts/translate-shaders.sh                      # → ~/Library/Caches/lsfg-metal/<dll hash>/
 swift run lsfg-metal check                        # build all Metal pipelines
+swift run -c release lsfg-metal generate prev.png next.png -o mid.png
 ```
 
 Translated output is cached in `~/Library/Caches/lsfg-metal/<dll hash>/`.
@@ -43,6 +54,13 @@ Translated output is cached in `~/Library/Caches/lsfg-metal/<dll hash>/`.
 - `inspect [--verbose]`: lists the shaders with thread-group size, instruction count and named bindings.
 - `dump --out DIR`: writes the shaders as `.dxbc` files. Keep `DIR` outside the repo.
 - `check`: builds a Metal pipeline for every translated kernel.
+- `generate PREV NEXT -o OUT.png [--multiplier N] [--flow-scale F] [--fp32] [--runs N]`: writes the generated frame(s) between two images. With `--multiplier 3` or more it writes `OUT.1.png`, `OUT.2.png`, and so on.
+
+## Credits
+
+The LSFG 3.1 pass graph, shader ID table and constant-buffer layout in `Sources/LSFGCore/LSFG31.swift` follow [lsfg-vk](https://github.com/PancakeTAS/lsfg-vk) at its MIT-licensed revisions (MIT License, Copyright (c) 2025 lsfg-vk). Later lsfg-vk releases use CC BY-NC-ND 4.0, and nothing here comes from them.
+
+Shader translation uses [dxbc-spirv](https://github.com/doitsujin/dxbc-spirv) (MIT) and [SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross) (Apache 2.0) as external tools.
 
 ## Notes
 
