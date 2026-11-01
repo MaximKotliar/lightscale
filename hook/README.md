@@ -85,5 +85,5 @@ The hook reads them when the game starts, matching on the exe name. These enviro
 ## Tests
 
 - `build/bridge_test`: runs the LSFG engine under Rosetta on synthetic RGB10A2 frames.
-- `build/fake_game`: imitates D3DMetal's present pattern in a window. Load the hook with `DYLD_INSERT_LIBRARIES=$PWD/build/lsfghook.so`. `FAKE_FPS`, `FAKE_JITTER=1` and `FAKE_GPU_MS` simulate real-game conditions. `FAKE_MTL4=1` presents through Metal 4 like GPTK 4. `FAKE_THREAD=1` renders from a plain thread, like Wine's (`FAKE_THREAD=2`: without a per-frame autorelease pool), and `FAKE_SECONDS` sets how long it runs.
+- `build/fake_game`: imitates D3DMetal's present pattern in a window. Load the hook with `DYLD_INSERT_LIBRARIES=$PWD/build/lsfghook.so`. `FAKE_FPS`, `FAKE_JITTER=1` and `FAKE_GPU_MS` simulate real-game conditions. `FAKE_MTL4=1` presents through Metal 4 like GPTK 4. The window floats above others, since macOS throttles the display link for covered windows. `FAKE_THREAD=1` renders from a plain thread, like Wine's (`FAKE_THREAD=2`: without a per-frame autorelease pool), and `FAKE_SECONDS` sets how long it runs.
 - `build/present_order`: shows which presentation patterns Core Animation drops.

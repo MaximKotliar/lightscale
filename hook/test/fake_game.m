@@ -30,6 +30,9 @@ int main(void) {
         layer.drawableSize = CGSizeMake(fw, fh);
         win.contentView.wantsLayer = YES;
         win.contentView.layer = layer;
+        // Float above other windows: macOS throttles the display link and reports frames as not
+        // presented when the window is covered, which would skew every measurement.
+        win.level = NSFloatingWindowLevel;
         [win orderFrontRegardless];
         id<MTLCommandQueue> queue = [dev newCommandQueue];
         // FAKE_GPU_MS=N: add about N ms of GPU work before the drawable pass, like a GPU-bound game.

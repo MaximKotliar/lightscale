@@ -67,7 +67,7 @@ typedef enum {
 static const char *counterNames[kCounterCount] = {
     "drawable.present", "drawable.presentAtTime", "drawable.presentAfterMinimumDuration",
     "cmdbuf.presentDrawable", "cmdbuf.presentDrawable:atTime", "cmdbuf.presentDrawable:afterMinimumDuration",
-    "mtl4queue.signalDrawable", "mtl4queue.waitForDrawable", "layer.nextDrawable", "generated", "link.updates", "queue.flushed", "mtl4queue.commit",
+    "mtl4queue.signalDrawable", "mtl4queue.waitForDrawable", "layer.nextDrawable", "generated", "link.updates", "frames.skipped", "mtl4queue.commit",
 };
 static _Atomic long counters[kCounterCount];
 static _Atomic bool describedLayer;
@@ -220,7 +220,9 @@ static void addGpuSpan(CFTimeInterval start, CFTimeInterval end) {
 }
 static _Atomic long slotWaitUs, frameGpuUs, frameGpuCount, linkGpuUs, linkGpuCount, queueAheadUs, queueAheadCount;
 
-enum { kSlots = 4 };
+// A slot is taken when the game submits a frame and freed once that frame has been shown, which
+// can be ~100 ms later (games submit 2-3 frames ahead of the GPU, then LSFG, queueing, display).
+enum { kSlots = 6 };
 enum { kMaxGenerated = 3 };             // 4x: three frames between each pair of real frames
 static id<MTLTexture> realRing[kSlots], genRing[kSlots][kMaxGenerated];
 static dispatch_semaphore_t slotsFree;
@@ -661,26 +663,20 @@ static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, void (^targ
     BOOL capture = ov == 2;
     if (capture && fgWarmup > 0) { fgWarmup--; capture = NO; }
 
+    // A slot frees up when the display has shown (or skipped) its frames. If none frees up within
+    // 2 ms (game running faster than the slots cover, or the display link slowed down because the
+    // window is covered), skip showing this real frame instead of stalling the game. Frames already
+    // queued keep showing; LSFG is still fed, so later generated frames stay correct.
     int slot = -1;
     if (capture) {
-    // A slot frees up when the display has shown (or skipped) its frames. If the display link
-    // slows down (window covered, minimized), never stall the game: after 4 ms, drop frames that
-    // haven't been shown yet to free their slots.
-    CFTimeInterval waitStart = CACurrentMediaTime();
-    if (dispatch_semaphore_wait(slotsFree, dispatch_time(DISPATCH_TIME_NOW, 4 * NSEC_PER_MSEC)) != 0) {
-        os_unfair_lock_lock(&queueLock);
-        while (queueCount > 0) {
-            releaseFrameLocked(frameQueue[queueHead]);
-            queueHead = (queueHead + 1) % kQueueCapacity;
-            queueCount--;
+        CFTimeInterval waitStart = CACurrentMediaTime();
+        if (dispatch_semaphore_wait(slotsFree, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_MSEC)) == 0) {
+            slot = nextSlot++ % kSlots;
+        } else {
+            capture = NO;
+            bump(kSkipped);
         }
-        os_unfair_lock_unlock(&queueLock);
-        bump(kSkipped);
-        // Frames still being copied to the screen release their slot within a refresh.
-        dispatch_semaphore_wait(slotsFree, DISPATCH_TIME_FOREVER);
-    }
-    atomic_fetch_add(&slotWaitUs, (long)((CACurrentMediaTime() - waitStart) * 1e6));
-    slot = nextSlot++ % kSlots;
+        atomic_fetch_add(&slotWaitUs, (long)((CACurrentMediaTime() - waitStart) * 1e6));
     }
 
     // Feed LSFG every real frame (this also warms up its history before the overlay is up), and
