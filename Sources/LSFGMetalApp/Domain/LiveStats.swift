@@ -55,7 +55,10 @@ enum LiveStats {
         /on screen (?<fps>\d+) fps, interval (?<ms>[\d.]+) ms ±(?<sd>[\d.]+), max [\d.]+, dropped (?<drop>\d+)/
     }
 
-    private static func parse(_ text: Substring) -> LiveSample? {
+    /// The game's own frames: it takes one drawable per frame (`layer.nextDrawable`). Our overlay
+    /// gets its drawables from the display link, but `drawable.present` counts its presents too,
+    /// so that one is only a fallback for logs without the drawable counter.
+    static func parse(_ text: Substring) -> LiveSample? {
         guard let m = text.firstMatch(of: line) else { return nil }
         let rest = String(m.rest)
         func count(_ key: String) -> Int {
@@ -63,7 +66,7 @@ enum LiveStats {
             return Int(r.output[1].substring ?? "") ?? 0
         }
         let s = rest.firstMatch(of: shown)
-        return LiveSample(time: Double(m.t) ?? 0, pid: Int(m.pid) ?? 0, realFPS: count("drawable.present"),
+        return LiveSample(time: Double(m.t) ?? 0, pid: Int(m.pid) ?? 0, realFPS: count("layer.nextDrawable") > 0 ? count("layer.nextDrawable") : count("drawable.present"),
                           generated: count("generated"), shownFPS: s.flatMap { Int($0.fps) },
                           frameTimeMs: s.flatMap { Double($0.ms) }, spreadMs: s.flatMap { Double($0.sd) },
                           dropped: s.flatMap { Int($0.drop) })

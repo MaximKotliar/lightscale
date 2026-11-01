@@ -121,3 +121,11 @@ import Testing
     GameFolderProfile.remove(for: game)
     #expect(!FileManager.default.fileExists(atPath: folder.appending(path: ".lsfg").path))
 }
+
+@Test func liveStatsCountOnlyTheGamesOwnFrames() throws {
+    let line: Substring = "[10521.739 pid 74884] per second: drawable.present=45 mtl4queue.signalDrawable=9 layer.nextDrawable=9 generated=27 link.updates=120 | on screen 37 fps, interval 27.8 ms ±9.2, max 58.3, dropped 0"
+    let sample = try #require(LiveStats.parse(line))
+    #expect(sample.realFPS == 9)
+    #expect(sample.shownFPS == 37)
+    #expect(sample.generated == 27)
+}
