@@ -48,10 +48,45 @@ int main(void) {
         BOOL jitter = getenv("FAKE_JITTER") != NULL;
         double fps = getenv("FAKE_FPS") ? atof(getenv("FAKE_FPS")) : 30;
         double seconds = getenv("FAKE_SECONDS") ? atof(getenv("FAKE_SECONDS")) : 6;
+        // FAKE_MTL4=1: present the way D3DMetal 4 (GPTK 4) does: a Metal 4 command buffer renders
+        // into the drawable, then waitForDrawable, commit:count:, signalDrawable, present.
+        BOOL mtl4 = getenv("FAKE_MTL4") != NULL;
+        enum { kInFlight = 3 };
+        id<MTL4CommandQueue> queue4 = mtl4 ? [dev newMTL4CommandQueue] : nil;
+        NSMutableArray<id<MTL4CommandAllocator>> *allocators = [NSMutableArray array];
+        NSMutableArray<id<MTL4CommandBuffer>> *buffers4 = [NSMutableArray array];
+        id<MTLSharedEvent> done4 = mtl4 ? [dev newSharedEvent] : nil;
+        if (mtl4) {
+            [queue4 addResidencySet:layer.residencySet];
+            for (int i = 0; i < kInFlight; i++) { [allocators addObject:[dev newCommandAllocator]]; [buffers4 addObject:[dev newCommandBuffer]]; }
+        }
+        __block uint64_t submitted4 = 0;
         void (^renderFrame)(void) = ^{
             if (jitter) usleep(arc4random_uniform(10000));
             id<CAMetalDrawable> d = [layer nextDrawable];
             if (!d) return;
+            if (mtl4) {
+                // Reuse an allocator only once the GPU has finished the frame that used it.
+                if (submitted4 >= kInFlight) [done4 waitUntilSignaledValue:submitted4 - kInFlight + 1 timeoutMS:1000];
+                int i = (int)(submitted4 % kInFlight);
+                [allocators[i] reset];
+                id<MTL4CommandBuffer> cb4 = buffers4[i];
+                [cb4 beginCommandBufferWithAllocator:allocators[i]];
+                MTL4RenderPassDescriptor *rp4 = [MTL4RenderPassDescriptor new];
+                rp4.colorAttachments[0].texture = d.texture;
+                rp4.colorAttachments[0].loadAction = MTLLoadActionClear;
+                rp4.colorAttachments[0].storeAction = MTLStoreActionStore;
+                double phase = 0.5 + 0.5 * sin(frame++ * 2 * M_PI / 300);
+                rp4.colorAttachments[0].clearColor = MTLClearColorMake(0.2 + 0.1 * phase, 0.3, 0.4 - 0.1 * phase, 1);
+                [[cb4 renderCommandEncoderWithDescriptor:rp4] endEncoding];
+                [cb4 endCommandBuffer];
+                [queue4 waitForDrawable:d];
+                [queue4 commit:&cb4 count:1];
+                [queue4 signalDrawable:d];
+                [queue4 signalEvent:done4 value:++submitted4];
+                [d present];
+                return;
+            }
             MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
             rp.colorAttachments[0].texture = d.texture;
             rp.colorAttachments[0].loadAction = MTLLoadActionClear;

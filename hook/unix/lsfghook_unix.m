@@ -21,6 +21,9 @@
 //   LSFG_BUFFER_MS=N     scheduling headroom that absorbs frame-time jitter (default 8 ms)
 //   LSFG_LOG=path        log file (default ~/Library/Logs/lsfg-metal.log)
 
+// Metal 4 code (MTL4CommandQueue etc.) only runs when a game submits through Metal 4, which
+// itself needs macOS 26, so the availability warnings for it don't apply.
+#pragma clang diagnostic ignored "-Wunguarded-availability-new"
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -59,12 +62,12 @@ static void lsfg_log(NSString *fmt, ...) {
 typedef enum {
     kDrawablePresent, kDrawablePresentAtTime, kDrawablePresentAfter,
     kCBPresent, kCBPresentAtTime, kCBPresentAfter,
-    kMTL4Signal, kMTL4Wait, kNextDrawable, kGenerated, kLinkUpdates, kSkipped, kCounterCount
+    kMTL4Signal, kMTL4Wait, kNextDrawable, kGenerated, kLinkUpdates, kSkipped, kMTL4Commit, kCounterCount
 } Counter;
 static const char *counterNames[kCounterCount] = {
     "drawable.present", "drawable.presentAtTime", "drawable.presentAfterMinimumDuration",
     "cmdbuf.presentDrawable", "cmdbuf.presentDrawable:atTime", "cmdbuf.presentDrawable:afterMinimumDuration",
-    "mtl4queue.signalDrawable", "mtl4queue.waitForDrawable", "layer.nextDrawable", "generated", "link.updates", "queue.flushed",
+    "mtl4queue.signalDrawable", "mtl4queue.waitForDrawable", "layer.nextDrawable", "generated", "link.updates", "queue.flushed", "mtl4queue.commit",
 };
 static _Atomic long counters[kCounterCount];
 static _Atomic bool describedLayer;
@@ -618,7 +621,10 @@ static void startDisplayLink(CAMetalLayer *layer) {
 }
 
 // Commit hook, for the command buffer that renders a real frame into drawable texture `target`.
-static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target) {
+// Encodes frame generation for one real frame into `cb`. `targetRead` (may be nil) is called once
+// every read of the game's frame `target` is encoded, before LSFG's own work (the Metal 4 path
+// lets the game continue from there). Not called if the frame isn't used.
+static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, void (^targetRead)(id<MTLCommandBuffer>)) {
     if (!atomic_load(&fgOn)) {
         // Switched off: the game presents its own frames again; prime LSFG afresh when back on.
         if (atomic_load(&overlayState) == 2) setOverlayHidden(YES);
@@ -649,18 +655,14 @@ static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target) {
     }
     int ov = atomic_load(&overlayState);
     if (ov == 0) attachOverlay(fgLayer);
+    // Until the overlay is ready the game keeps presenting itself. A fresh context (or frame
+    // generation just switched back on) has no history yet: its first frame only primes it, and
+    // the game presents that one itself too.
+    BOOL capture = ov == 2;
+    if (capture && fgWarmup > 0) { fgWarmup--; capture = NO; }
 
-    // Feed LSFG every real frame (this also warms up its history before the overlay is up).
-    id<MTLTexture> input = (__bridge id<MTLTexture>)bridge.input(fgContext);
-    id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
-    [blit copyFromTexture:target toTexture:input];
-    [blit endEncoding];
-    int generated = bridge.encode(fgContext, (__bridge const void *)cb);
-    if (ov != 2) return; // the game keeps presenting itself until the overlay is ready
-    // A fresh context (or frame generation just switched back on) has no history yet: its first
-    // frame only primes it, and the game presents that one itself.
-    if (fgWarmup > 0) { fgWarmup--; return; }
-
+    int slot = -1;
+    if (capture) {
     // A slot frees up when the display has shown (or skipped) its frames. If the display link
     // slows down (window covered, minimized), never stall the game: after 4 ms, drop frames that
     // haven't been shown yet to free their slots.
@@ -678,9 +680,21 @@ static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target) {
         dispatch_semaphore_wait(slotsFree, DISPATCH_TIME_FOREVER);
     }
     atomic_fetch_add(&slotWaitUs, (long)((CACurrentMediaTime() - waitStart) * 1e6));
-    int slot = nextSlot++ % kSlots;
+    slot = nextSlot++ % kSlots;
+    }
+
+    // Feed LSFG every real frame (this also warms up its history before the overlay is up), and
+    // keep the real frame for display. These are the only reads of the game's frame.
+    id<MTLTexture> input = (__bridge id<MTLTexture>)bridge.input(fgContext);
+    id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+    [blit copyFromTexture:target toTexture:input];
+    if (capture) [blit copyFromTexture:target toTexture:realRing[slot]];
+    [blit endEncoding];
+    if (targetRead) targetRead(cb);
+    int generated = bridge.encode(fgContext, (__bridge const void *)cb);
+    if (!capture) return;
+
     blit = [cb blitCommandEncoder];
-    [blit copyFromTexture:target toTexture:realRing[slot]];
     generated = MAX(0, MIN(generated, kMaxGenerated));
     while (generated > 0 && !genRing[slot][generated - 1]) generated--;
     for (int j = 0; j < generated; j++)
@@ -704,6 +718,34 @@ static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target) {
         lastCompletion = now;
         dispatch_async(presenter, ^{ presentSlot(slot, count, now); });
     }];
+}
+
+// Metal 4 (D3DMetal in GPTK 4): the game submits MTL4 command buffers to an MTL4CommandQueue,
+// which take no Metal 3 encoders. Frame generation runs on our own queue instead, ordered with the
+// game's queue by two shared events: the game's queue signals once the frame is submitted (our
+// work waits for it), and waits until we've copied the frame before running anything after it, so
+// it can't draw into that image again before we've read it. LSFG itself overlaps the game's next
+// frame.
+static id<MTLCommandQueue> fgQueue;   // our queue for the Metal 4 path
+
+static void fgEncodeMetal4(id<MTL4CommandQueue> queue, id<MTLTexture> target) {
+    static id<MTLSharedEvent> submitted, copied;
+    static uint64_t frame;
+    if (!fgQueue) {
+        fgQueue = [target.device newCommandQueue];
+        submitted = [target.device newSharedEvent];
+        copied = [target.device newSharedEvent];
+        lsfg_log(@"frame generation on the Metal 4 path");
+    }
+    uint64_t n = ++frame;
+    [queue signalEvent:submitted value:n];
+    id<MTLCommandBuffer> cb = [fgQueue commandBuffer];
+    [cb encodeWaitForEvent:submitted value:n];
+    __block BOOL signaled = NO;
+    fgEncode(cb, target, ^(id<MTLCommandBuffer> c) { [c encodeSignalEvent:copied value:n]; signaled = YES; });
+    if (!signaled) [cb encodeSignalEvent:copied value:n];
+    [cb commit];
+    [queue waitForEvent:copied value:n];
 }
 
 // Present hook for a game drawable. Returns YES if we took the frame over (it is shown on the
@@ -844,10 +886,11 @@ static void installPresentHooks(void) {
                 id<MTLTexture> target = fgAvailable ? objc_getAssociatedObject(self, &kDrawableTargetKey) : nil;
                 if (target) {
                     objc_setAssociatedObject(self, &kDrawableTargetKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                    fgEncode(self, target);
+                    fgEncode(self, target, nil);
                 }
                 // Every command buffer the game commits counts toward GPU busy time (ours don't).
-                if ([(id<MTLCommandBuffer>)self commandQueue] != presentQueue)
+                id<MTLCommandQueue> owner = [(id<MTLCommandBuffer>)self commandQueue];
+                if (owner != presentQueue && owner != fgQueue)
                     [(id<MTLCommandBuffer>)self addCompletedHandler:^(id<MTLCommandBuffer> done) {
                         addGpuSpan(done.GPUStartTime, done.GPUEndTime);
                     }];
@@ -901,16 +944,55 @@ static void installPresentHooks(void) {
             }
         };
     });
-    // MTL4 command buffers take an MTL4RenderPassDescriptor (same colorAttachments shape).
-    hookAll(@selector(renderCommandEncoderWithDescriptor:), ^BOOL(Class c) { return conforms(c, @protocol(MTL4CommandBuffer)); }, ^id(IMP orig) {
-        return ^id(id self, id desc) {
+    // Metal 4 (GPTK 4): MTL4 command buffers render into the drawable with an
+    // MTL4RenderPassDescriptor; the frame is submitted with -[MTL4CommandQueue commit:count:].
+    BOOL (^isMTL4CommandBuffer)(Class) = ^BOOL(Class c) { return conforms(c, @protocol(MTL4CommandBuffer)); };
+    void (^noteMTL4Pass)(id, MTL4RenderPassDescriptor *) = ^(id cb, MTL4RenderPassDescriptor *desc) {
+        @autoreleasepool {
+            id<MTLTexture> target = desc.colorAttachments[0].texture;
+            if (!isDrawableTexture(target)) return;
+            if (fgAvailable) objc_setAssociatedObject(cb, &kDrawableTargetKey, target, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            if (diagActive())
+                lsfg_log(@"diag MTL4 render pass into drawable: cb %@ on %@", NSStringFromClass([cb class]), threadName());
+        }
+    };
+    hookAll(@selector(renderCommandEncoderWithDescriptor:), isMTL4CommandBuffer, ^id(IMP orig) {
+        return ^id(id self, MTL4RenderPassDescriptor *desc) {
             id enc = ((id (*)(id, SEL, id))orig)(self, @selector(renderCommandEncoderWithDescriptor:), desc);
-            if (diagActive()) @autoreleasepool {
-                id target = [[[desc valueForKey:@"colorAttachments"] objectAtIndexedSubscript:0] valueForKey:@"texture"];
-                if (isDrawableTexture(target))
-                    lsfg_log(@"diag MTL4 render pass into drawable: cb %@ on %@", NSStringFromClass([self class]), threadName());
-            }
+            noteMTL4Pass(self, desc);
             return enc;
+        };
+    });
+    hookAll(@selector(renderCommandEncoderWithDescriptor:options:), isMTL4CommandBuffer, ^id(IMP orig) {
+        return ^id(id self, MTL4RenderPassDescriptor *desc, NSUInteger options) {
+            id enc = ((id (*)(id, SEL, id, NSUInteger))orig)(self, @selector(renderCommandEncoderWithDescriptor:options:), desc, options);
+            noteMTL4Pass(self, desc);
+            return enc;
+        };
+    });
+    void (^afterMTL4Commit)(id, const id *, NSUInteger) = ^(id queue, const id *buffers, NSUInteger count) {
+        if (!fgAvailable) return;
+        @autoreleasepool {
+            for (NSUInteger i = 0; i < count; i++) {
+                id<MTLTexture> target = objc_getAssociatedObject(buffers[i], &kDrawableTargetKey);
+                if (!target) continue;
+                objc_setAssociatedObject(buffers[i], &kDrawableTargetKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                fgEncodeMetal4(queue, target);
+            }
+        }
+    };
+    hookAll(@selector(commit:count:), signals, ^id(IMP orig) {
+        return ^(id self, const id *buffers, NSUInteger count) {
+            bump(kMTL4Commit);
+            ((void (*)(id, SEL, const id *, NSUInteger))orig)(self, @selector(commit:count:), buffers, count);
+            afterMTL4Commit(self, buffers, count);
+        };
+    });
+    hookAll(@selector(commit:count:options:), signals, ^id(IMP orig) {
+        return ^(id self, const id *buffers, NSUInteger count, id options) {
+            bump(kMTL4Commit);
+            ((void (*)(id, SEL, const id *, NSUInteger, id))orig)(self, @selector(commit:count:options:), buffers, count, options);
+            afterMTL4Commit(self, buffers, count);
         };
     });
     free(scanClasses);

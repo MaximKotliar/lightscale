@@ -14,9 +14,10 @@ First result: The Witcher 3 (DX12, D3DMetal, capped at 30 fps) on an M4 Max show
 
 ## How frames are generated and shown
 
-D3DMetal draws each finished frame into a drawable with one render pass, commits that command buffer, then calls `-[CAMetalDrawable present]`. The hook:
+D3DMetal draws each finished frame into a drawable with a render pass, submits it, then calls `-[CAMetalDrawable present]`. GPTK 3 submits Metal 3 command buffers (`commit`); GPTK 4 submits Metal 4 ones (`-[MTL4CommandQueue commit:count:]`, between `waitForDrawable:` and `signalDrawable:`). The hook picks the path per frame:
 
-- **On commit:** appends to that same command buffer, so the GPU runs it after the game's work. It copies the frame into LSFG, runs LSFG 3.1 (the `LSFGBridge` engine, `liblsfgbridge.dylib`, with shaders from your own `Lossless.dll`), and copies the real and generated frames into a small ring of textures.
+- **On commit (Metal 3):** appends to that same command buffer, so the GPU runs it after the game's work. It copies the frame into LSFG, runs LSFG 3.1 (the `LSFGBridge` engine, `liblsfgbridge.dylib`, with shaders from your own `Lossless.dll`), and copies the real and generated frames into a small ring of textures.
+- **On commit (Metal 4):** Metal 4 command buffers take no Metal 3 encoders, so the hook runs the same work on its own queue, ordered with the game's queue by two shared events: the game's queue signals once the frame is submitted, and our command buffer waits for that; it signals again as soon as it has copied the frame, and the game's queue waits for that before anything that follows, so the game can't draw into the image before it's read. LSFG itself overlaps the game's next frame.
 - **On present:** doesn't present the game's drawable. The game gets it back immediately, so frame generation can never slow the game down.
 - **On our own overlay layer** (a `CAMetalLayer` on top of the game's layer): once the GPU finishes, the generated frames and the real one are queued evenly across one real-frame interval, on a steady cadence with an 8 ms buffer, so the game's frame-time jitter doesn't reach the screen. A `CAMetalDisplayLink` on its own thread shows the newest frame due at each display refresh.
 - **2× or 4×:** with 4× the hook generates three frames per real one. When the display can't show them all (60 Hz, or Low Power Mode, which caps the display at 60 Hz), it picks evenly spaced frames, so 4× falls back to a clean 2× instead of dropping frames.
@@ -78,11 +79,11 @@ The hook reads them when the game starts, matching on the exe name. These enviro
 - **HUD and UI are interpolated with the scene.** LSFG only sees finished frames.
 - **Latency:** each real frame is shown about half a frame plus 8 ms later than without frame generation.
 - **Resolution changes:** if the game changes resolution mid-session, frame generation switches off until restart.
-- **Only one game tested** (The Witcher 3 under D3DMetal). Other presentation paths (`presentDrawable:` on a command buffer, Metal 4 `signalDrawable:`) are logged but not taken over yet.
+- **Few games tested:** The Witcher 3 and The Last of Us Part II under D3DMetal (GPTK 3; the Metal 4 path is tested with `fake_game FAKE_MTL4=1`). Other presentation paths (`presentDrawable:` on a command buffer) are logged but not taken over yet.
 - **64-bit games only.** Never use it with online games that have anti-cheat.
 
 ## Tests
 
 - `build/bridge_test`: runs the LSFG engine under Rosetta on synthetic RGB10A2 frames.
-- `build/fake_game`: imitates D3DMetal's present pattern in a window. Load the hook with `DYLD_INSERT_LIBRARIES=$PWD/build/lsfghook.so`. `FAKE_FPS`, `FAKE_JITTER=1` and `FAKE_GPU_MS` simulate real-game conditions. `FAKE_THREAD=1` renders from a plain thread, like Wine's (`FAKE_THREAD=2`: without a per-frame autorelease pool), and `FAKE_SECONDS` sets how long it runs.
+- `build/fake_game`: imitates D3DMetal's present pattern in a window. Load the hook with `DYLD_INSERT_LIBRARIES=$PWD/build/lsfghook.so`. `FAKE_FPS`, `FAKE_JITTER=1` and `FAKE_GPU_MS` simulate real-game conditions. `FAKE_MTL4=1` presents through Metal 4 like GPTK 4. `FAKE_THREAD=1` renders from a plain thread, like Wine's (`FAKE_THREAD=2`: without a per-frame autorelease pool), and `FAKE_SECONDS` sets how long it runs.
 - `build/present_order`: shows which presentation patterns Core Animation drops.
