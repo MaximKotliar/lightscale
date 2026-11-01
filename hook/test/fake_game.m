@@ -24,7 +24,10 @@ int main(void) {
         CAMetalLayer *layer = [CAMetalLayer layer];
         layer.device = dev;
         layer.pixelFormat = MTLPixelFormatRGB10A2Unorm;
-        layer.drawableSize = CGSizeMake(1280, 720);
+        // FAKE_SIZE=WxH: drawable size (default 1280x720).
+        int fw = 1280, fh = 720;
+        if (getenv("FAKE_SIZE")) sscanf(getenv("FAKE_SIZE"), "%dx%d", &fw, &fh);
+        layer.drawableSize = CGSizeMake(fw, fh);
         win.contentView.wantsLayer = YES;
         win.contentView.layer = layer;
         [win orderFrontRegardless];

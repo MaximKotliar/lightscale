@@ -59,12 +59,12 @@ static void lsfg_log(NSString *fmt, ...) {
 typedef enum {
     kDrawablePresent, kDrawablePresentAtTime, kDrawablePresentAfter,
     kCBPresent, kCBPresentAtTime, kCBPresentAfter,
-    kMTL4Signal, kMTL4Wait, kNextDrawable, kGenerated, kLinkUpdates, kCounterCount
+    kMTL4Signal, kMTL4Wait, kNextDrawable, kGenerated, kLinkUpdates, kSkipped, kCounterCount
 } Counter;
 static const char *counterNames[kCounterCount] = {
     "drawable.present", "drawable.presentAtTime", "drawable.presentAfterMinimumDuration",
     "cmdbuf.presentDrawable", "cmdbuf.presentDrawable:atTime", "cmdbuf.presentDrawable:afterMinimumDuration",
-    "mtl4queue.signalDrawable", "mtl4queue.waitForDrawable", "layer.nextDrawable", "generated", "link.updates",
+    "mtl4queue.signalDrawable", "mtl4queue.waitForDrawable", "layer.nextDrawable", "generated", "link.updates", "queue.flushed",
 };
 static _Atomic long counters[kCounterCount];
 static _Atomic bool describedLayer;
@@ -205,6 +205,9 @@ static CFTimeInterval lastCompletion, frameInterval;      // GPU completion cade
 // showed them (~25 ms after the GPU finished) made the game wait in nextDrawable.
 static CAMetalLayer *overlay;
 static _Atomic int overlayState;          // 0 none, 1 attaching, 2 ready, -1 off
+// Per-second timing (microseconds), logged as a "timing:" line.
+static _Atomic long slotWaitUs, frameGpuUs, frameGpuCount, linkGpuUs, linkGpuCount, queueAheadUs, queueAheadCount;
+
 enum { kSlots = 4 };
 enum { kMaxGenerated = 3 };             // 4x: three frames between each pair of real frames
 static id<MTLTexture> realRing[kSlots], genRing[kSlots][kMaxGenerated];
@@ -484,6 +487,8 @@ static void presentSlot(int slot, int generated, CFTimeInterval completedAt) {
     if (first < earliest) first = earliest + buffer;                       // fell behind: restart the cadence
     if (first > earliest + buffer + period / 2) first = earliest + buffer; // drifted ahead: pull latency back in
     lastRealTarget = first + (shown - 1) * step;
+    atomic_fetch_add(&queueAheadUs, (long)((lastRealTarget - CACurrentMediaTime()) * 1e6));
+    atomic_fetch_add(&queueAheadCount, 1);
     if (traceOn()) {
         static int n;
         if (n++ < 12) lsfg_log(@"trace slot %d: %.1f ms after GPU completion, %d generated from +%.1f ms, step %.1f ms",
@@ -540,6 +545,12 @@ static void presentSlot(int slot, int generated, CFTimeInterval completedAt) {
         os_unfair_lock_lock(&queueLock);
         releaseFrameLocked(show);
         os_unfair_lock_unlock(&queueLock);
+    }];
+    [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
+        if (done.GPUEndTime > done.GPUStartTime) {
+            atomic_fetch_add(&linkGpuUs, (long)((done.GPUEndTime - done.GPUStartTime) * 1e6));
+            atomic_fetch_add(&linkGpuCount, 1);
+        }
     }];
     // Back on after being switched off: reveal the overlay once it holds a fresh frame.
     if (atomic_load(&overlayHidden) && atomic_load(&fgOn))
@@ -612,7 +623,23 @@ static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target) {
     // frame only primes it, and the game presents that one itself.
     if (fgWarmup > 0) { fgWarmup--; return; }
 
-    dispatch_semaphore_wait(slotsFree, DISPATCH_TIME_FOREVER); // only waits if 4 frames are queued
+    // A slot frees up when the display has shown (or skipped) its frames. If the display link
+    // slows down (window covered, minimized), never stall the game: after 4 ms, drop frames that
+    // haven't been shown yet to free their slots.
+    CFTimeInterval waitStart = CACurrentMediaTime();
+    if (dispatch_semaphore_wait(slotsFree, dispatch_time(DISPATCH_TIME_NOW, 4 * NSEC_PER_MSEC)) != 0) {
+        os_unfair_lock_lock(&queueLock);
+        while (queueCount > 0) {
+            releaseFrameLocked(frameQueue[queueHead]);
+            queueHead = (queueHead + 1) % kQueueCapacity;
+            queueCount--;
+        }
+        os_unfair_lock_unlock(&queueLock);
+        bump(kSkipped);
+        // Frames still being copied to the screen release their slot within a refresh.
+        dispatch_semaphore_wait(slotsFree, DISPATCH_TIME_FOREVER);
+    }
+    atomic_fetch_add(&slotWaitUs, (long)((CACurrentMediaTime() - waitStart) * 1e6));
     int slot = nextSlot++ % kSlots;
     blit = [cb blitCommandEncoder];
     [blit copyFromTexture:target toTexture:realRing[slot]];
@@ -628,6 +655,10 @@ static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target) {
     int count = MAX(0, MIN(generated, kMaxGenerated));
     [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
         CFTimeInterval now = CACurrentMediaTime();
+        if (done.GPUEndTime > done.GPUStartTime) {
+            atomic_fetch_add(&frameGpuUs, (long)((done.GPUEndTime - done.GPUStartTime) * 1e6));
+            atomic_fetch_add(&frameGpuCount, 1);
+        }
         if (lastCompletion > 0) {
             CFTimeInterval dt = now - lastCompletion;
             if (dt > 0.004 && dt < 0.25) frameInterval = frameInterval > 0 ? frameInterval * 0.8 + dt * 0.2 : dt;
@@ -908,6 +939,13 @@ static void startStatsTimer(void) {
         shownCount = droppedCount = 0; shownSum = shownSumSq = shownMax = 0;
         os_unfair_lock_unlock(&pacingLock);
         if (line.length) lsfg_log(@"per second:%@", line);
+        long fn = atomic_exchange(&frameGpuCount, 0), fu = atomic_exchange(&frameGpuUs, 0);
+        long ln = atomic_exchange(&linkGpuCount, 0), lu = atomic_exchange(&linkGpuUs, 0);
+        long qn = atomic_exchange(&queueAheadCount, 0), qu = atomic_exchange(&queueAheadUs, 0);
+        long wu = atomic_exchange(&slotWaitUs, 0);
+        if (fn) lsfg_log(@"timing: game waits %.1f ms/s for a slot, frame GPU %.2f ms (game's last pass + LSFG), "
+                         @"present GPU %.2f ms, queued %.1f ms ahead", wu / 1000.0, fu / 1000.0 / fn,
+                         ln ? lu / 1000.0 / ln : 0.0, qn ? qu / 1000.0 / qn : 0.0);
         reloadConfigIfChanged();
         // Memory every 10 s, so leaks show up in the log (same number as Activity Monitor's "Memory").
         static int tick;
@@ -915,7 +953,8 @@ static void startStatsTimer(void) {
             task_vm_info_data_t vm;
             mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
             if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vm, &count) == KERN_SUCCESS)
-                lsfg_log(@"memory: footprint %llu MB", vm.phys_footprint >> 20);
+                lsfg_log(@"memory: footprint %llu MB, thermal state %ld", vm.phys_footprint >> 20,
+                         (long)NSProcessInfo.processInfo.thermalState);
         }
     });
     dispatch_resume(timer);
