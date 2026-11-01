@@ -206,6 +206,15 @@ static CFTimeInterval lastCompletion, frameInterval;      // GPU completion cade
 static CAMetalLayer *overlay;
 static _Atomic int overlayState;          // 0 none, 1 attaching, 2 ready, -1 off
 // Per-second timing (microseconds), logged as a "timing:" line.
+// Total GPU busy time of the game's command buffers (overlapping spans counted once).
+static os_unfair_lock busyLock = OS_UNFAIR_LOCK_INIT;
+static double busyEnd, busySeconds;
+static void addGpuSpan(CFTimeInterval start, CFTimeInterval end) {
+    if (end <= start) return;
+    os_unfair_lock_lock(&busyLock);
+    if (end > busyEnd) { busySeconds += end - MAX(start, busyEnd); busyEnd = end; }
+    os_unfair_lock_unlock(&busyLock);
+}
 static _Atomic long slotWaitUs, frameGpuUs, frameGpuCount, linkGpuUs, linkGpuCount, queueAheadUs, queueAheadCount;
 
 enum { kSlots = 4 };
@@ -808,6 +817,11 @@ static void installPresentHooks(void) {
                     objc_setAssociatedObject(self, &kDrawableTargetKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                     fgEncode(self, target);
                 }
+                // Every command buffer the game commits counts toward GPU busy time (ours don't).
+                if ([(id<MTLCommandBuffer>)self commandQueue] != presentQueue)
+                    [(id<MTLCommandBuffer>)self addCompletedHandler:^(id<MTLCommandBuffer> done) {
+                        addGpuSpan(done.GPUStartTime, done.GPUEndTime);
+                    }];
                 ((void (*)(id, SEL))orig)(self, @selector(commit));
             }
         };
@@ -943,9 +957,13 @@ static void startStatsTimer(void) {
         long ln = atomic_exchange(&linkGpuCount, 0), lu = atomic_exchange(&linkGpuUs, 0);
         long qn = atomic_exchange(&queueAheadCount, 0), qu = atomic_exchange(&queueAheadUs, 0);
         long wu = atomic_exchange(&slotWaitUs, 0);
+        os_unfair_lock_lock(&busyLock);
+        double busy = busySeconds; busySeconds = 0;
+        os_unfair_lock_unlock(&busyLock);
         if (fn) lsfg_log(@"timing: game waits %.1f ms/s for a slot, frame GPU %.2f ms (game's last pass + LSFG), "
-                         @"present GPU %.2f ms, queued %.1f ms ahead", wu / 1000.0, fu / 1000.0 / fn,
-                         ln ? lu / 1000.0 / ln : 0.0, qn ? qu / 1000.0 / qn : 0.0);
+                         @"present GPU %.2f ms, queued %.1f ms ahead, GPU busy %.0f%%", wu / 1000.0, fu / 1000.0 / fn,
+                         ln ? lu / 1000.0 / ln : 0.0, qn ? qu / 1000.0 / qn : 0.0, busy * 100);
+        else if (busy > 0) lsfg_log(@"timing: GPU busy %.0f%% (frame generation idle)", busy * 100);
         reloadConfigIfChanged();
         // Memory every 10 s, so leaks show up in the log (same number as Activity Monitor's "Memory").
         static int tick;
