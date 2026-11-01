@@ -93,7 +93,7 @@ private struct ProfileCard: View {
             }
             .disabled(!profile.wrappedValue.enabled)
             HStack {
-                Text(game.isInstalled ? "Changes apply the next time the game starts." : "Install to use these settings.")
+                Text(game.isInstalled ? "Changes apply right away, even while the game is running." : "Install to use these settings.")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 if model.hasCustomProfile(game) {

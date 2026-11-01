@@ -1,7 +1,7 @@
 import Foundation
 
-/// Frame-generation settings for one game. The hook reads them from profiles.json when the game
-/// starts (keyed by the exe name), so changes apply the next time the game launches.
+/// Frame-generation settings for one game. The hook reads them from profiles.json (keyed by the
+/// exe name) when the game starts and re-reads the file once a second, so changes apply live.
 struct GameProfile: Codable, Equatable, Sendable {
     var enabled = true
     /// Frames shown per real frame: 2 or 4.

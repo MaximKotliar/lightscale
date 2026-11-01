@@ -48,7 +48,7 @@ Cap the game at half your display's refresh rate (30 on 60 Hz, 60 on 120 Hz, or 
 
 ## Settings
 
-Per-game profiles live in `~/Library/Application Support/lsfg-metal/profiles.json`, and LSFG Metal.app edits them:
+Per-game profiles live in `~/Library/Application Support/lsfg-metal/profiles.json`, and LSFG Metal.app edits them. The hook checks the file once a second while the game runs: on/off and the pacing buffer apply at once; multiplier, mode and motion detail rebuild the LSFG context in the background (0.05–0.2 s) and swap it in on the next frame, whose output only primes the new context:
 
 ```json
 { "default": { "enabled": true, "multiplier": 2, "performance": true, "flowScale": 1.0, "bufferMs": 8 },

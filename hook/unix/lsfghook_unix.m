@@ -27,6 +27,7 @@
 #import <QuartzCore/QuartzCore.h>
 #import <dlfcn.h>
 #import <mach/mach.h>
+#import <sys/stat.h>
 #import <objc/runtime.h>
 #import <os/lock.h>
 #import <pthread.h>
@@ -172,16 +173,23 @@ typedef void *(*bridge_create_fn)(const void *, int, int, unsigned, int, float, 
 typedef const void *(*bridge_texture_fn)(void *);
 typedef int (*bridge_encode_fn)(void *, const void *);
 typedef const void *(*bridge_output_fn)(void *, int);
+typedef void (*bridge_destroy_fn)(void *);
 static struct {
     bridge_create_fn create;
     bridge_texture_fn input;
     bridge_encode_fn encode;
     bridge_output_fn output;
+    bridge_destroy_fn destroy;
 } bridge;
 
-static BOOL fgEnabled;
+static BOOL fgAvailable;               // the bridge loaded and drawables are readable
+static _Atomic bool fgOn;              // the profile's on/off switch (changes live)
 static _Atomic int fgState;            // 0 idle, 1 creating, 2 ready, -1 failed
-static void *fgContext;
+static void *fgContext;                // used on the game's commit path only
+static void *_Atomic fgPending;        // rebuilt context waiting to replace fgContext
+static int fgWarmup;                   // frames to feed LSFG without showing (fresh history)
+static __weak id<MTLDevice> fgDevice;
+static _Atomic bool overlayHidden;
 static NSUInteger fgWidth, fgHeight;
 static MTLPixelFormat fgFormat;
 static __weak CAMetalLayer *fgLayer;   // layer the game's drawables come from
@@ -242,6 +250,8 @@ static void applyProfile(NSDictionary *p) {
 }
 
 static void loadConfig(void) {
+    config.enabled = YES; config.performance = YES; config.multiplier = 2;
+    config.flowScale = 1.0f; config.bufferMs = 8.0f;
     NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/lsfg-metal/profiles.json"];
     NSData *data = [NSData dataWithContentsOfFile:path];
     NSDictionary *root = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
@@ -264,6 +274,30 @@ static void loadConfig(void) {
              config.performance ? "performance" : "quality", config.flowScale, config.bufferMs);
 }
 
+static void fgRebuild(void);
+static void setOverlayHidden(BOOL hidden);
+
+// The app saves profiles.json on every change; pick changes up while the game runs (checked
+// once a second). On/off and the pacing buffer apply at once; the rest rebuilds the context.
+static void reloadConfigIfChanged(void) {
+    static struct timespec seen;
+    struct stat st;
+    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/lsfg-metal/profiles.json"];
+    if (stat(path.fileSystemRepresentation, &st) != 0) return;
+    BOOL first = seen.tv_sec == 0;
+    if (!first && st.st_mtimespec.tv_sec == seen.tv_sec && st.st_mtimespec.tv_nsec == seen.tv_nsec) return;
+    seen = st.st_mtimespec;
+    if (first) return; // read at startup already
+    typeof(config) before = config;
+    loadConfig();
+    if (config.enabled != before.enabled) {
+        atomic_store(&fgOn, config.enabled);
+        lsfg_log(@"frame generation switched %s", config.enabled ? "on" : "off");
+    }
+    if (config.multiplier != before.multiplier || config.performance != before.performance || config.flowScale != before.flowScale)
+        fgRebuild();
+}
+
 static BOOL envOn(const char *name, BOOL fallback) {
     const char *v = getenv(name);
     return v ? v[0] != '0' : fallback;
@@ -280,7 +314,20 @@ static BOOL loadBridge(void) {
     bridge.input = (bridge_texture_fn)dlsym(lib, "lsfg_bridge_input");
     bridge.encode = (bridge_encode_fn)dlsym(lib, "lsfg_bridge_encode");
     bridge.output = (bridge_output_fn)dlsym(lib, "lsfg_bridge_output");
-    return bridge.create && bridge.input && bridge.encode && bridge.output;
+    bridge.destroy = (bridge_destroy_fn)dlsym(lib, "lsfg_bridge_destroy");
+    return bridge.create && bridge.input && bridge.encode && bridge.output && bridge.destroy;
+}
+
+// Ring textures for the frames being shown. Rings only grow (a later 2x → 4x reuses them).
+static void allocateRings(id<MTLDevice> device, NSUInteger w, NSUInteger h, MTLPixelFormat format, int multiplier) {
+    MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format width:w height:h mipmapped:NO];
+    d.usage = MTLTextureUsageShaderRead;
+    d.storageMode = MTLStorageModePrivate;
+    for (int i = 0; i < kSlots; i++) {
+        if (!realRing[i]) realRing[i] = [device newTextureWithDescriptor:d];
+        for (int j = 0; j < multiplier - 1 && j < kMaxGenerated; j++)
+            if (!genRing[i][j]) genRing[i][j] = [device newTextureWithDescriptor:d];
+    }
 }
 
 // Builds the LSFG context and ring textures in the background (pipelines can take a moment).
@@ -300,13 +347,8 @@ static void fgCreateContext(id<MTLDevice> device, id<MTLTexture> frame) {
             atomic_store(&fgState, -1);
             return;
         }
-        MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format width:w height:h mipmapped:NO];
-        d.usage = MTLTextureUsageShaderRead;
-        d.storageMode = MTLStorageModePrivate;
-        for (int i = 0; i < kSlots; i++) {
-            realRing[i] = [device newTextureWithDescriptor:d];
-            for (int j = 0; j < config.multiplier - 1; j++) genRing[i][j] = [device newTextureWithDescriptor:d];
-        }
+        fgDevice = device;
+        allocateRings(device, w, h, format, config.multiplier);
         presentQueue = [device newCommandQueue];
         presenter = dispatch_queue_create("lsfg.presenter", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
         slotsFree = dispatch_semaphore_create(kSlots);
@@ -315,6 +357,41 @@ static void fgCreateContext(id<MTLDevice> device, id<MTLTexture> frame) {
         atomic_store(&fgState, 2);
         lsfg_log(@"frame generation ready: %lux%lu fmt %lu, flow %.2f, %s mode, built in %.2fs", (unsigned long)w,
                  (unsigned long)h, (unsigned long)format, flow, perf ? "performance" : "quality", CACurrentMediaTime() - t0);
+    });
+}
+
+// New settings that change the LSFG context (multiplier, mode, motion detail): build a new one
+// in the background; the game's next frame swaps it in (fgEncode) and frees the old one.
+static void fgRebuild(void) {
+    static dispatch_queue_t queue;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ queue = dispatch_queue_create("lsfg.rebuild", DISPATCH_QUEUE_SERIAL); });
+    dispatch_async(queue, ^{
+        id<MTLDevice> device = fgDevice;
+        if (atomic_load(&fgState) != 2 || !device) return;
+        char error[512] = {0};
+        int multiplier = config.multiplier;
+        float flow = config.flowScale;
+        BOOL perf = config.performance;
+        CFTimeInterval t0 = CACurrentMediaTime();
+        void *ctx = bridge.create((__bridge const void *)device, (int)fgWidth, (int)fgHeight, (unsigned)fgFormat,
+                                  multiplier, flow, perf, error, sizeof error);
+        if (!ctx) { lsfg_log(@"settings not applied: %s", error); return; }
+        allocateRings(device, fgWidth, fgHeight, fgFormat, multiplier);
+        void *older = atomic_exchange(&fgPending, ctx);
+        if (older) bridge.destroy(older); // never used: a newer change came in first
+        lsfg_log(@"frame generation rebuilt: %dx, flow %.2f, %s mode, in %.2fs", multiplier, flow,
+                 perf ? "performance" : "quality", CACurrentMediaTime() - t0);
+    });
+}
+
+static void setOverlayHidden(BOOL hidden) {
+    if (atomic_exchange(&overlayHidden, hidden) == hidden) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        overlay.hidden = atomic_load(&overlayHidden);
+        [CATransaction commit];
     });
 }
 
@@ -390,8 +467,7 @@ static void presentSlot(int slot, int generated, CFTimeInterval completedAt) {
     for (int k = 1; k < shown; k++) picks[k - 1] = (int)llround((double)k * (generated + 1) / shown) - 1;
     picks[shown - 1] = -1; // the real frame
     CFTimeInterval step = period / shown;
-    static double buffer = -1;
-    if (buffer < 0) buffer = config.bufferMs / 1000.0;
+    double buffer = config.bufferMs / 1000.0; // read every frame: changes apply live
     // Earliest a new frame can appear: the refresh after the link's latest one.
     double target = atomic_load(&linkTarget);
     CFTimeInterval earliest = target > 0 ? target + (refresh > 0 ? refresh : 1.0 / 120) : CACurrentMediaTime() + 0.003;
@@ -456,6 +532,9 @@ static void presentSlot(int slot, int generated, CFTimeInterval completedAt) {
         releaseFrameLocked(show);
         os_unfair_lock_unlock(&queueLock);
     }];
+    // Back on after being switched off: reveal the overlay once it holds a fresh frame.
+    if (atomic_load(&overlayHidden) && atomic_load(&fgOn))
+        [cb addCompletedHandler:^(id<MTLCommandBuffer> done) { if (atomic_load(&fgOn)) setOverlayHidden(NO); }];
     [cb commit];
     if (show.index >= 0) bump(kGenerated);
 }
@@ -482,9 +561,26 @@ static void startDisplayLink(CAMetalLayer *layer) {
 
 // Commit hook, for the command buffer that renders a real frame into drawable texture `target`.
 static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target) {
+    if (!atomic_load(&fgOn)) {
+        // Switched off: the game presents its own frames again; prime LSFG afresh when back on.
+        if (atomic_load(&overlayState) == 2) setOverlayHidden(YES);
+        fgWarmup = 1;
+        return;
+    }
     int state = atomic_load(&fgState);
     if (state == 0) fgCreateContext(cb.device, target);
     if (state != 2) return;
+    void *rebuilt = atomic_exchange(&fgPending, NULL);
+    if (rebuilt) {
+        // New settings: swap contexts. The old one is freed once the GPU is done with it.
+        void *old = fgContext;
+        fgContext = rebuilt;
+        fgWarmup = 1;
+        [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 2), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0),
+                           ^{ bridge.destroy(old); });
+        }];
+    }
     if (target.width != fgWidth || target.height != fgHeight || target.pixelFormat != fgFormat) {
         if (atomic_exchange(&overlayState, -1) == 2) {
             lsfg_log(@"frame size or format changed; frame generation off (restart the game)");
@@ -503,12 +599,17 @@ static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target) {
     [blit endEncoding];
     int generated = bridge.encode(fgContext, (__bridge const void *)cb);
     if (ov != 2) return; // the game keeps presenting itself until the overlay is ready
+    // A fresh context (or frame generation just switched back on) has no history yet: its first
+    // frame only primes it, and the game presents that one itself.
+    if (fgWarmup > 0) { fgWarmup--; return; }
 
     dispatch_semaphore_wait(slotsFree, DISPATCH_TIME_FOREVER); // only waits if 4 frames are queued
     int slot = nextSlot++ % kSlots;
     blit = [cb blitCommandEncoder];
     [blit copyFromTexture:target toTexture:realRing[slot]];
-    for (int j = 0; j < generated && j < kMaxGenerated; j++)
+    generated = MAX(0, MIN(generated, kMaxGenerated));
+    while (generated > 0 && !genRing[slot][generated - 1]) generated--;
+    for (int j = 0; j < generated; j++)
         [blit copyFromTexture:(__bridge id<MTLTexture>)bridge.output(fgContext, j) toTexture:genRing[slot][j]];
     [blit endEncoding];
     os_unfair_lock_lock(&capturedLock);
@@ -559,7 +660,7 @@ static void installPresentHooks(void) {
                              k, (__bridge void *)[(id<CAMetalDrawable>)self texture], threadName(),
                              (__bridge void *)cb, cb ? (long)cb.status : -1L);
                 }
-                if (fgEnabled && fgPresent(self)) return;
+                if (fgAvailable && fgPresent(self)) return;
                 if ([(id<CAMetalDrawable>)self layer] != overlay) trackPresented(self);
                 ((void (*)(id, SEL))orig)(self, @selector(present));
             }
@@ -633,7 +734,7 @@ static void installPresentHooks(void) {
             // Runs for every render pass: free what the lookups autorelease (Wine's threads never drain).
             @autoreleasepool {
             id<MTLTexture> target = desc.colorAttachments[0].texture;
-            if (fgEnabled && isDrawableTexture(target))
+            if (fgAvailable && isDrawableTexture(target))
                 objc_setAssociatedObject(self, &kDrawableTargetKey, target, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             if (diagActive() && isDrawableTexture(target)) {
                 objc_setAssociatedObject(self, &kWritesDrawableKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -662,7 +763,7 @@ static void installPresentHooks(void) {
                 if (diagActive() && objc_getAssociatedObject(self, &kWritesDrawableKey))
                     lsfg_log(@"diag commit of drawable-writing cb %p (presents so far: %d) on %@", (__bridge void *)self,
                              atomic_load(&diagPresents), threadName());
-                id<MTLTexture> target = fgEnabled ? objc_getAssociatedObject(self, &kDrawableTargetKey) : nil;
+                id<MTLTexture> target = fgAvailable ? objc_getAssociatedObject(self, &kDrawableTargetKey) : nil;
                 if (target) {
                     objc_setAssociatedObject(self, &kDrawableTargetKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                     fgEncode(self, target);
@@ -798,6 +899,7 @@ static void startStatsTimer(void) {
         shownCount = droppedCount = 0; shownSum = shownSumSq = shownMax = 0;
         os_unfair_lock_unlock(&pacingLock);
         if (line.length) lsfg_log(@"per second:%@", line);
+        reloadConfigIfChanged();
         // Memory every 10 s, so leaks show up in the log (same number as Activity Monitor's "Memory").
         static int tick;
         if (++tick % 10 == 0) {
@@ -819,9 +921,11 @@ __attribute__((constructor)) static void lsfg_unix_init(void) {
         const char *enable = getenv("LSFG_ENABLE");
         if (enable && enable[0] == '0') { lsfg_log(@"LSFG_ENABLE=0, no hooks installed"); return; }
         loadConfig();
-        fgEnabled = config.enabled && envOn("LSFG_READABLE", YES) && loadBridge();
+        // Loaded even when the profile has frame generation off, so it can be switched on live.
+        fgAvailable = envOn("LSFG_READABLE", YES) && loadBridge();
+        atomic_store(&fgOn, config.enabled);
         captured = [NSMutableSet set];
-        lsfg_log(@"frame generation %s", fgEnabled ? "on" : "off");
+        lsfg_log(@"frame generation %s", !fgAvailable ? "unavailable" : config.enabled ? "on" : "off");
         installLayerHook();
         startStatsTimer();
     }
