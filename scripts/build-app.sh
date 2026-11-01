@@ -25,6 +25,29 @@ for f in lsfghook.dll lsfghook.so lsfghook.placeholder.dll liblsfgbridge.dylib d
     cp "$ROOT/hook/build/$f" "$APP/Contents/Resources/Hook/"
 done
 [ -d "$ROOT/hook/build/baked" ] && cp -R "$ROOT/hook/build/baked" "$APP/Contents/Resources/Hook/baked"
+# GPTK versions the app can switch CrossOver between. Each source folder holds external/ and
+# wine/ like CrossOver's lib64/apple_gptk. Apple's license allows non-commercial copies that keep
+# its notices; these come from this Mac and are never committed. Override with GPTK_SOURCES
+# (folders separated by ":").
+GPTK_SOURCES=${GPTK_SOURCES:-"$HOME/Applications/CrossOver-GPTK-3.0-backup/apple_gptk:$HOME/Applications/GPTK-4.0b3/lib"}
+IFS=: read -ra GPTK_DIRS <<< "$GPTK_SOURCES"
+for src in "${GPTK_DIRS[@]}"; do
+    plist="$src/external/D3DMetal.framework/Versions/A/Resources/Info.plist"
+    [ -f "$plist" ] && [ -d "$src/wine" ] || continue
+    v=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$plist")
+    dst="$APP/Contents/Resources/GPTK/$v"
+    mkdir -p "$dst"
+    ditto "$src/external" "$dst/external"
+    ditto "$src/wine" "$dst/wine"
+    # GPTK 4 ships DLSS as nvngx-on-metalfx, but CrossOver redirects games' nvngx.dll to the copy
+    # named nvngx (an older nvngx crashes with a newer D3DMetal).
+    for ext in x86_64-windows/nvngx%s.dll x86_64-unix/nvngx%s.so; do
+        from="$dst/wine/$(printf "$ext" -on-metalfx)" to="$dst/wine/$(printf "$ext" "")"
+        if [ -f "$from" ]; then cp "$from" "$to"; fi
+    done
+    [ -f "$(dirname "$src")/License.rtf" ] && cp "$(dirname "$src")/License.rtf" "$dst/"
+    echo "GPTK $v included"
+done
 # App icon, drawn by scripts/make-icon.swift.
 ICONSET="$ROOT/build/AppIcon.iconset"
 rm -rf "$ICONSET" && mkdir -p "$ICONSET"

@@ -15,6 +15,7 @@ struct GameDetailView: View {
                 } else {
                     if let live = model.liveStats(for: game) { LiveCard(live: live) }
                     ProfileCard(game: game, model: model)
+                    if model.status.crossOver != nil { GPTKCard(game: game, model: model) }
                 }
             }
             .padding(24)
@@ -101,6 +102,62 @@ private struct ProfileCard: View {
                 }
             }
         }
+    }
+}
+
+/// Which GPTK the game should run with. CrossOver has one GPTK for all games, so a choice that
+/// differs from the installed one offers to switch CrossOver over.
+private struct GPTKCard: View {
+    let game: Game
+    let model: AppModel
+
+    private var preference: Binding<String?> {
+        Binding(get: { model.profile(for: game).gptk }, set: { value in
+            var profile = model.profile(for: game)
+            profile.gptk = value
+            model.setProfile(profile, for: game)
+        })
+    }
+
+    var body: some View {
+        let installed = model.installedGPTK
+        let wanted = preference.wrappedValue
+        let target = wanted.flatMap { w in model.gptkVersions.first { $0.version == w } }
+        let mismatch = target != nil && wanted != installed
+
+        Card(title: "Game Porting Toolkit") {
+            SettingRow(title: "Version", caption: caption(installed: installed, wanted: wanted, found: target != nil), warn: mismatch) {
+                Picker("Version", selection: preference) {
+                    Text("Any").tag(String?.none)
+                    ForEach(model.gptkVersions) { v in
+                        Text(v.version == installed ? "\(v.name) (installed)" : v.name).tag(Optional(v.version))
+                    }
+                }
+                .labelsHidden()
+                .disabled(model.gptkVersions.isEmpty)
+            }
+            if mismatch, let target {
+                HStack {
+                    Text("This changes it for every game in CrossOver. Quit Steam first.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    if model.isSwitchingGPTK {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Button("Switch to \(target.name)") { Task { await model.switchGPTK(to: target) } }
+                            .buttonStyle(.borderedProminent)
+                    }
+                }
+            }
+        }
+    }
+
+    private func caption(installed: String?, wanted: String?, found: Bool) -> String {
+        guard let installed else { return "CrossOver's GPTK files weren't found." }
+        if model.gptkVersions.isEmpty { return "CrossOver has GPTK \(installed). This build of the app has no other versions." }
+        if let wanted, !found { return "GPTK \(wanted) isn't in this app anymore. CrossOver has GPTK \(installed)." }
+        if let wanted, wanted != installed { return "CrossOver has GPTK \(installed). Switch before you play this game." }
+        return "CrossOver has GPTK \(installed)."
     }
 }
 

@@ -9,13 +9,17 @@ struct GameProfile: Codable, Equatable, Sendable {
     var performance = true
     var flowScale = 1.0
     var bufferMs = 8.0
+    /// The GPTK version this game should run with (nil: whichever CrossOver has). The app reads
+    /// it; the hook ignores it.
+    var gptk: String?
 
-    init(enabled: Bool = true, multiplier: Int = 2, performance: Bool = true, flowScale: Double = 1.0, bufferMs: Double = 8.0) {
+    init(enabled: Bool = true, multiplier: Int = 2, performance: Bool = true, flowScale: Double = 1.0, bufferMs: Double = 8.0, gptk: String? = nil) {
         self.enabled = enabled
         self.multiplier = multiplier
         self.performance = performance
         self.flowScale = flowScale
         self.bufferMs = bufferMs
+        self.gptk = gptk
     }
 
     // Missing keys (older files) fall back to defaults instead of discarding the profile.
@@ -27,6 +31,7 @@ struct GameProfile: Codable, Equatable, Sendable {
         performance = try c.decodeIfPresent(Bool.self, forKey: .performance) ?? d.performance
         flowScale = try c.decodeIfPresent(Double.self, forKey: .flowScale) ?? d.flowScale
         bufferMs = try c.decodeIfPresent(Double.self, forKey: .bufferMs) ?? d.bufferMs
+        gptk = try c.decodeIfPresent(String.self, forKey: .gptk)
     }
 
     /// Off / 2x / 4x as one value (0, 1, 2) for the slider.

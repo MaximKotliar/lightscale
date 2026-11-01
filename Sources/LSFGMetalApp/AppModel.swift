@@ -13,6 +13,10 @@ final class AppModel {
     private(set) var isChecking = false
     private(set) var buildProgress: Double?
     private(set) var busyGames: Set<URL> = []
+    /// GPTK versions the app can switch CrossOver to, and the one CrossOver has now.
+    private(set) var gptkVersions: [GPTKVersion] = []
+    private(set) var installedGPTK: String?
+    private(set) var isSwitchingGPTK = false
     var selection: Game.ID?
     var showingSetup = false
     var error: String?
@@ -29,6 +33,7 @@ final class AppModel {
         isChecking = true
         defer { isChecking = false }
         status = await DependencyChecker.run()
+        refreshGPTK()
         profiles = ProfileFile.load()
         let bottles = Bottle.all()
         let scanned = await GameScanner.scan(bottles: bottles)
@@ -121,6 +126,26 @@ final class AppModel {
     /// Where Add Game's file picker starts: inside the first bottle's C: drive.
     var addGameStartFolder: URL? {
         Bottle.all().first.map { $0.url.appending(path: "drive_c") }
+    }
+
+    // MARK: GPTK
+
+    private func refreshGPTK() {
+        gptkVersions = GPTK.available()
+        installedGPTK = status.crossOver.flatMap(GPTK.installed(in:))
+    }
+
+    /// Puts `version` into CrossOver (for every game; Steam must be closed).
+    func switchGPTK(to version: GPTKVersion) async {
+        guard let crossOver = status.crossOver, !isSwitchingGPTK else { return }
+        isSwitchingGPTK = true
+        defer { isSwitchingGPTK = false }
+        do {
+            try await GPTK.install(version, into: crossOver, available: gptkVersions)
+        } catch {
+            self.error = error.localizedDescription
+        }
+        refreshGPTK()
     }
 
     // MARK: Profiles
