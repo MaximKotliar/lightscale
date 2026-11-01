@@ -60,6 +60,19 @@ struct ProfileFile: Codable, Equatable, Sendable {
 
     static func key(for game: Game) -> String { game.exe.lastPathComponent.lowercased() }
 
+    /// Every name the game may run under: its own .exe first, then the other .exe files in its
+    /// folder. Launchers often start a sibling (TLOU Part II lists tlou-ii-l.exe but runs
+    /// tlou-ii.exe), and the hook looks its settings up by the name of the running program.
+    static func keys(for game: Game) -> [String] {
+        let main = key(for: game)
+        let folder = game.exe.deletingLastPathComponent()
+        let siblings = ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? [])
+            .map { $0.lowercased() }
+            .filter { $0.hasSuffix(".exe") && $0 != main }
+            .sorted()
+        return [main] + siblings
+    }
+
     static func load() -> ProfileFile {
         guard let data = try? Data(contentsOf: url) else { return ProfileFile() }
         return (try? JSONDecoder().decode(ProfileFile.self, from: data)) ?? ProfileFile()
@@ -72,5 +85,12 @@ struct ProfileFile: Codable, Equatable, Sendable {
         try encoder.encode(self).write(to: Self.url, options: .atomic)
     }
 
-    func profile(for game: Game) -> GameProfile { games[Self.key(for: game)] ?? self.default }
+    func profile(for game: Game) -> GameProfile {
+        Self.keys(for: game).lazy.compactMap { games[$0] }.first ?? self.default
+    }
+
+    /// Stores `profile` under every name the game may run as (nil removes it).
+    mutating func setProfile(_ profile: GameProfile?, for game: Game) {
+        for key in Self.keys(for: game) { games[key] = profile }
+    }
 }

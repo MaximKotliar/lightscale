@@ -78,3 +78,29 @@ import Testing
     #expect(!HookInstaller.bottleIsSetUp(bottle))
     #expect(try String(contentsOf: bottle.conf, encoding: .utf8) == confBefore)
 }
+
+@Test func profilesApplyToEverySiblingExe() throws {
+    // TLOU Part II: the scan lists tlou-ii-l.exe, but the launcher runs tlou-ii.exe.
+    let folder = FileManager.default.temporaryDirectory.appending(path: "lsfg-siblings-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    for name in ["tlou-ii-l.exe", "TLOU-II.exe", "launcher.exe", "readme.txt"] {
+        try Data().write(to: folder.appending(path: name))
+    }
+    let game = Game(name: "TLOU", bottle: Bottle(url: folder), exe: folder.appending(path: "tlou-ii-l.exe"), status: .blocked("test"))
+    #expect(ProfileFile.keys(for: game) == ["tlou-ii-l.exe", "launcher.exe", "tlou-ii.exe"])
+
+    var file = ProfileFile()
+    file.setProfile(GameProfile(enabled: false), for: game)
+    #expect(file.games["tlou-ii.exe"]?.enabled == false)
+    #expect(file.games["tlou-ii-l.exe"]?.enabled == false)
+    #expect(file.profile(for: game).enabled == false)
+
+    // A profile saved only under the sibling's name (older app versions) is still found.
+    var older = ProfileFile()
+    older.games["tlou-ii.exe"] = GameProfile(multiplier: 4)
+    #expect(older.profile(for: game).multiplier == 4)
+
+    file.setProfile(nil, for: game)
+    #expect(file.games.isEmpty)
+}

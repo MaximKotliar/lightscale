@@ -100,7 +100,7 @@ final class AppModel {
         games.removeAll { $0.exe == game.exe }
         var updated = profiles
         updated.custom.removeAll { $0 == game.exe.path }
-        updated.games[ProfileFile.key(for: game)] = nil
+        updated.setProfile(nil, for: game)
         save(updated)
         if selection == game.exe { selection = games.first?.id }
     }
@@ -113,17 +113,17 @@ final class AppModel {
     // MARK: Profiles
 
     func profile(for game: Game) -> GameProfile { profiles.profile(for: game) }
-    func hasCustomProfile(_ game: Game) -> Bool { profiles.games[ProfileFile.key(for: game)] != nil }
+    func hasCustomProfile(_ game: Game) -> Bool { ProfileFile.keys(for: game).contains { profiles.games[$0] != nil } }
 
     func setProfile(_ profile: GameProfile, for game: Game) {
         var updated = profiles
-        updated.games[ProfileFile.key(for: game)] = profile == updated.default ? nil : profile
+        updated.setProfile(profile == updated.default ? nil : profile, for: game)
         save(updated)
     }
 
     func resetProfile(for game: Game) {
         var updated = profiles
-        updated.games[ProfileFile.key(for: game)] = nil
+        updated.setProfile(nil, for: game)
         save(updated)
     }
 
@@ -141,7 +141,7 @@ final class AppModel {
 
     /// Live stats for `game` if it's the game running right now.
     func liveStats(for game: Game) -> LiveStats.Snapshot? {
-        guard live.isLive, let process = live.process, process.lowercased() == ProfileFile.key(for: game) else { return nil }
+        guard live.isLive, let process = live.process, ProfileFile.keys(for: game).contains(process.lowercased()) else { return nil }
         return live
     }
 
