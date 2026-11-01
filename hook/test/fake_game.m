@@ -119,9 +119,24 @@ int main(void) {
                 [ce dispatchThreads:MTLSizeMake(1 << 20, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
                 [ce endEncoding];
                 [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
-                    // Steer the loop count toward the requested GPU time.
+                    // Steer the loop count toward the requested GPU time. FAKE_GPU_FREEZE=N: stop
+                    // steering after N seconds and report how long that fixed work takes (every
+                    // 10 s on stderr), to see the GPU slow down as it heats.
                     double ms = (done.GPUEndTime - done.GPUStartTime) * 1000;
-                    if (ms > 0) burnIters = (uint32_t)MAX(100, MIN(2000000, burnIters * (0.5 + 0.5 * gpuMs / ms)));
+                    static double freezeAt = -1, sum, lastReport;
+                    static int n;
+                    if (freezeAt < 0) freezeAt = getenv("FAKE_GPU_FREEZE") ? atof(getenv("FAKE_GPU_FREEZE")) : 1e9;
+                    double now = CACurrentMediaTime() - start;
+                    if (now < freezeAt) {
+                        if (ms > 0) burnIters = (uint32_t)MAX(100, MIN(2000000, burnIters * (0.5 + 0.5 * gpuMs / ms)));
+                    } else if (ms > 0) {
+                        sum += ms; n++;
+                        if (now - lastReport >= 10) {
+                            fprintf(stderr, "%4.0fs  fixed GPU work %6.2f ms  (%d frames)  thermal %ld\n", now, sum / n, n,
+                                    (long)NSProcessInfo.processInfo.thermalState);
+                            sum = 0; n = 0; lastReport = now;
+                        }
+                    }
                 }];
             }
             [[cb renderCommandEncoderWithDescriptor:rp] endEncoding];
