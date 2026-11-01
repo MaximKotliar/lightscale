@@ -62,12 +62,12 @@ static void lsfg_log(NSString *fmt, ...) {
 typedef enum {
     kDrawablePresent, kDrawablePresentAtTime, kDrawablePresentAfter,
     kCBPresent, kCBPresentAtTime, kCBPresentAfter,
-    kMTL4Signal, kMTL4Wait, kNextDrawable, kGenerated, kLinkUpdates, kSkipped, kMTL4Commit, kCounterCount
+    kMTL4Signal, kMTL4Wait, kNextDrawable, kGenerated, kLinkUpdates, kSkipped, kMTL4Commit, kLateBatches, kCaptured, kCounterCount
 } Counter;
 static const char *counterNames[kCounterCount] = {
     "drawable.present", "drawable.presentAtTime", "drawable.presentAfterMinimumDuration",
     "cmdbuf.presentDrawable", "cmdbuf.presentDrawable:atTime", "cmdbuf.presentDrawable:afterMinimumDuration",
-    "mtl4queue.signalDrawable", "mtl4queue.waitForDrawable", "layer.nextDrawable", "generated", "link.updates", "frames.skipped", "mtl4queue.commit",
+    "mtl4queue.signalDrawable", "mtl4queue.waitForDrawable", "layer.nextDrawable", "generated", "link.updates", "frames.skipped", "mtl4queue.commit", "batches.late", "frames.captured",
 };
 static _Atomic long counters[kCounterCount];
 static _Atomic bool describedLayer;
@@ -520,6 +520,7 @@ static BOOL fgShowing(void) { return atomic_load(&fgOn) && !atomic_load(&fgStepp
 // target, so the game's frame-time jitter doesn't reach the screen. The cadence only snaps to
 // "now" when frames arrive too late, and never runs far ahead (bounded latency).
 static CFTimeInterval lastRealTarget;
+static double adaptiveBuffer; // seconds; see presentSlot
 static void presentSlot(int slot, int generated, CFTimeInterval completedAt) {
     CFTimeInterval period = MIN(frameInterval > 0 ? frameInterval : 1.0 / 30, 0.1);
     // Show only as many frames per real frame as the display can: Low Power Mode caps ProMotion
@@ -532,13 +533,27 @@ static void presentSlot(int slot, int generated, CFTimeInterval completedAt) {
     for (int k = 1; k < shown; k++) picks[k - 1] = (int)llround((double)k * (generated + 1) / shown) - 1;
     picks[shown - 1] = -1; // the real frame
     CFTimeInterval step = period / shown;
-    double buffer = config.bufferMs / 1000.0; // read every frame: changes apply live
+    // The buffer is headroom for frames that finish late. The setting is its minimum: each time a
+    // batch arrives after its slot on the cadence (its frames would pile onto one refresh and all
+    // but one be skipped), the buffer grows by how late it was, up to 30 ms; while frames arrive in
+    // time it shrinks back by 0.1 ms per real frame. On the Metal 4 path, where LSFG starts only
+    // once the game's whole frame is done, 8 ms showed half the frames at 4x and 20 ms nearly all.
+    double minBuffer = config.bufferMs / 1000.0; // read every frame: changes apply live
+    if (adaptiveBuffer < minBuffer) adaptiveBuffer = minBuffer;
     // Earliest a new frame can appear: the refresh after the link's latest one.
     double target = atomic_load(&linkTarget);
     CFTimeInterval earliest = target > 0 ? target + (refresh > 0 ? refresh : 1.0 / 120) : CACurrentMediaTime() + 0.003;
     CFTimeInterval first = lastRealTarget > 0 ? lastRealTarget + step : earliest;
-    if (first < earliest) first = earliest + buffer;                       // fell behind: restart the cadence
-    if (first > earliest + buffer + period / 2) first = earliest + buffer; // drifted ahead: pull latency back in
+    if (first < earliest) {                                                  // fell behind: restart the cadence
+        if (lastRealTarget > 0) {
+            adaptiveBuffer = MIN(0.030, adaptiveBuffer + (earliest - first) + 0.001);
+            bump(kLateBatches);
+        }
+        first = earliest + adaptiveBuffer;
+    } else {
+        adaptiveBuffer = MAX(minBuffer, adaptiveBuffer - 0.0001);
+    }
+    if (first > earliest + adaptiveBuffer + period / 2) first = earliest + adaptiveBuffer; // drifted ahead: pull latency back in
     lastRealTarget = first + (shown - 1) * step;
     atomic_fetch_add(&queueAheadUs, (long)((lastRealTarget - CACurrentMediaTime()) * 1e6));
     atomic_fetch_add(&queueAheadCount, 1);
@@ -732,6 +747,7 @@ static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, void (^targ
     os_unfair_lock_lock(&capturedLock);
     [captured addObject:@((uintptr_t)(__bridge void *)target)];
     os_unfair_lock_unlock(&capturedLock);
+    bump(kCaptured);
 
     int count = MAX(0, MIN(generated, kMaxGenerated));
     [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
@@ -778,6 +794,35 @@ static void fgEncodeMetal4(id<MTL4CommandQueue> queue, id<MTLTexture> target) {
     [queue waitForEvent:copied value:n];
 }
 
+// A game may draw into the drawable in several Metal 4 submissions per frame (TLOU Part II: the
+// scene, then the UI). Each submit only records the drawable; frame generation runs once per frame,
+// when the game hands the drawable to the display (signalDrawable, or present as a fallback), on
+// the image as it finally is. Capturing every submission fed LSFG near-identical pairs, so the
+// "generated" frames carried no new motion.
+static os_unfair_lock pendingLock = OS_UNFAIR_LOCK_INIT;
+static id pendingQueue;               // MTL4CommandQueue of the latest submit into the drawable
+static id<MTLTexture> pendingTarget;
+
+static void notePendingMetal4(id queue, id<MTLTexture> target) {
+    os_unfair_lock_lock(&pendingLock);
+    pendingQueue = queue;
+    pendingTarget = target;
+    os_unfair_lock_unlock(&pendingLock);
+}
+
+// Runs frame generation for `texture`'s frame if one is pending (texture nil: whatever is pending).
+static void flushPendingMetal4(id<MTLTexture> texture) {
+    os_unfair_lock_lock(&pendingLock);
+    id queue = nil;
+    id<MTLTexture> target = nil;
+    if (pendingTarget && (!texture || pendingTarget == texture)) {
+        queue = pendingQueue; target = pendingTarget;
+        pendingQueue = nil; pendingTarget = nil;
+    }
+    os_unfair_lock_unlock(&pendingLock);
+    if (target) fgEncodeMetal4(queue, target);
+}
+
 // Present hook for a game drawable. Returns YES if we took the frame over (it is shown on the
 // overlay instead): the drawable then goes back to the game without being presented.
 static BOOL fgPresent(id<CAMetalDrawable> real) {
@@ -810,6 +855,7 @@ static void installPresentHooks(void) {
                              k, (__bridge void *)[(id<CAMetalDrawable>)self texture], threadName(),
                              (__bridge void *)cb, cb ? (long)cb.status : -1L);
                 }
+                if (fgAvailable) flushPendingMetal4([(id<CAMetalDrawable>)self texture]); // no signalDrawable
                 if (fgAvailable && fgPresent(self)) return;
                 if ([(id<CAMetalDrawable>)self layer] != overlay) trackPresented(self);
                 ((void (*)(id, SEL))orig)(self, @selector(present));
@@ -864,7 +910,10 @@ static void installPresentHooks(void) {
         return ^(id self, id d) {
             @autoreleasepool {
                 bump(kMTL4Signal);
-                if (conforms(object_getClass(d), drawable)) describeDrawable(d, "mtl4queue.signalDrawable");
+                if (conforms(object_getClass(d), drawable)) {
+                    describeDrawable(d, "mtl4queue.signalDrawable");
+                    if (fgAvailable) flushPendingMetal4([(id<CAMetalDrawable>)d texture]);
+                }
                 ((void (*)(id, SEL, id))orig)(self, @selector(signalDrawable:), d);
             }
         };
@@ -1007,7 +1056,7 @@ static void installPresentHooks(void) {
                 id<MTLTexture> target = objc_getAssociatedObject(buffers[i], &kDrawableTargetKey);
                 if (!target) continue;
                 objc_setAssociatedObject(buffers[i], &kDrawableTargetKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                fgEncodeMetal4(queue, target);
+                notePendingMetal4(queue, target);
             }
         }
     };
@@ -1102,8 +1151,8 @@ static void startStatsTimer(void) {
         double busy = busySeconds; busySeconds = 0;
         os_unfair_lock_unlock(&busyLock);
         if (fn) lsfg_log(@"timing: game waits %.1f ms/s for a slot, frame GPU %.2f ms (game's last pass + LSFG), "
-                         @"present GPU %.2f ms, queued %.1f ms ahead, GPU busy %.0f%%", wu / 1000.0, fu / 1000.0 / fn,
-                         ln ? lu / 1000.0 / ln : 0.0, qn ? qu / 1000.0 / qn : 0.0, busy * 100);
+                         @"present GPU %.2f ms, queued %.1f ms ahead, buffer %.1f ms, GPU busy %.0f%%", wu / 1000.0, fu / 1000.0 / fn,
+                         ln ? lu / 1000.0 / ln : 0.0, qn ? qu / 1000.0 / qn : 0.0, adaptiveBuffer * 1000, busy * 100);
         else if (busy > 0) lsfg_log(@"timing: GPU busy %.0f%% (frame generation idle)", busy * 100);
         reloadConfigIfChanged();
         // Memory every 10 s, so leaks show up in the log (same number as Activity Monitor's "Memory").

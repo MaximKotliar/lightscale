@@ -57,11 +57,11 @@ int main(void) {
         enum { kInFlight = 3 };
         id<MTL4CommandQueue> queue4 = mtl4 ? [dev newMTL4CommandQueue] : nil;
         NSMutableArray<id<MTL4CommandAllocator>> *allocators = [NSMutableArray array];
-        NSMutableArray<id<MTL4CommandBuffer>> *buffers4 = [NSMutableArray array];
+        NSMutableArray<id<MTL4CommandBuffer>> *buffers4 = [NSMutableArray array], *uiBuffers4 = [NSMutableArray array];
         id<MTLSharedEvent> done4 = mtl4 ? [dev newSharedEvent] : nil;
         if (mtl4) {
             [queue4 addResidencySet:layer.residencySet];
-            for (int i = 0; i < kInFlight; i++) { [allocators addObject:[dev newCommandAllocator]]; [buffers4 addObject:[dev newCommandBuffer]]; }
+            for (int i = 0; i < kInFlight; i++) { [allocators addObject:[dev newCommandAllocator]]; [buffers4 addObject:[dev newCommandBuffer]]; [uiBuffers4 addObject:[dev newCommandBuffer]]; }
         }
         __block uint64_t submitted4 = 0;
         void (^renderFrame)(void) = ^{
@@ -85,6 +85,19 @@ int main(void) {
                 [cb4 endCommandBuffer];
                 [queue4 waitForDrawable:d];
                 [queue4 commit:&cb4 count:1];
+                // FAKE_MTL4_PASSES=2: like TLOU Part II on GPTK 4, a second submission draws into the
+                // drawable again (the UI, over the scene) before it's handed to the display.
+                if (getenv("FAKE_MTL4_PASSES") && atoi(getenv("FAKE_MTL4_PASSES")) > 1) {
+                    id<MTL4CommandBuffer> ui = uiBuffers4[i];
+                    [ui beginCommandBufferWithAllocator:allocators[i]];
+                    MTL4RenderPassDescriptor *over = [MTL4RenderPassDescriptor new];
+                    over.colorAttachments[0].texture = d.texture;
+                    over.colorAttachments[0].loadAction = MTLLoadActionLoad;
+                    over.colorAttachments[0].storeAction = MTLStoreActionStore;
+                    [[ui renderCommandEncoderWithDescriptor:over] endEncoding];
+                    [ui endCommandBuffer];
+                    [queue4 commit:&ui count:1];
+                }
                 [queue4 signalDrawable:d];
                 [queue4 signalEvent:done4 value:++submitted4];
                 [d present];
