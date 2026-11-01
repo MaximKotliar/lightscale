@@ -49,7 +49,7 @@ int main(void) {
         CFTimeInterval start = CACurrentMediaTime();
         // FAKE_JITTER=1: frame times vary 28-38 ms like a real game instead of a steady 33.3.
         BOOL jitter = getenv("FAKE_JITTER") != NULL;
-        double fps = getenv("FAKE_FPS") ? atof(getenv("FAKE_FPS")) : 30;
+        double fps = getenv("FAKE_FPS") ? atof(getenv("FAKE_FPS")) : 30, defaultFps = fps;
         double seconds = getenv("FAKE_SECONDS") ? atof(getenv("FAKE_SECONDS")) : 6;
         // FAKE_MTL4=1: present the way D3DMetal 4 (GPTK 4) does: a Metal 4 command buffer renders
         // into the drawable, then waitForDrawable, commit:count:, signalDrawable, present.
@@ -122,6 +122,17 @@ int main(void) {
             loop = ^{
                 while (CACurrentMediaTime() - start < seconds) {
                     CFTimeInterval t0 = CACurrentMediaTime();
+                    // FAKE_FPS_PLAN=30:8,90:8,30:8: frame rate changes over time (fps:seconds, ...).
+                    double fps = defaultFps;
+                    if (getenv("FAKE_FPS_PLAN")) {
+                        double at = t0 - start, edge = 0;
+                        for (NSString *step in [@(getenv("FAKE_FPS_PLAN")) componentsSeparatedByString:@","]) {
+                            NSArray *parts = [step componentsSeparatedByString:@":"];
+                            fps = [parts[0] doubleValue];
+                            edge += parts.count > 1 ? [parts[1] doubleValue] : 1e9;
+                            if (at < edge) break;
+                        }
+                    }
                     // Like a real engine: a pool per frame. FAKE_THREAD=2 skips it (nothing is ever freed).
                     if (getenv("FAKE_THREAD")[0] == '2') renderFrame();
                     else @autoreleasepool { renderFrame(); }

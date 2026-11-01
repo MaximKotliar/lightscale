@@ -506,6 +506,16 @@ static void releaseFrameLocked(QueuedFrame f) {
     if (--slotRemaining[f.slot] == 0) dispatch_semaphore_signal(slotsFree);
 }
 
+// The display's real refresh interval: Low Power Mode caps ProMotion displays at 60 Hz while still
+// reporting (and ticking the display link at) 120.
+static double effectiveRefresh(void) {
+    return MAX(atomic_load(&linkInterval), NSProcessInfo.processInfo.lowPowerModeEnabled ? 1.0 / 60 : 0);
+}
+
+// Frame generation stepped aside because the game runs too fast for generated frames (fgShouldRun).
+static _Atomic bool fgSteppedAside;
+static BOOL fgShowing(void) { return atomic_load(&fgOn) && !atomic_load(&fgSteppedAside); }
+
 // Display times follow a steady cadence: each frame continues from the previous real frame's
 // target, so the game's frame-time jitter doesn't reach the screen. The cadence only snaps to
 // "now" when frames arrive too late, and never runs far ahead (bounded latency).
@@ -515,7 +525,7 @@ static void presentSlot(int slot, int generated, CFTimeInterval completedAt) {
     // Show only as many frames per real frame as the display can: Low Power Mode caps ProMotion
     // displays at 60 Hz while still reporting (and ticking the display link at) 120. Pick the
     // generated frames evenly, e.g. 4x at 30 fps on 60 Hz shows the middle one: a clean 2x.
-    double refresh = MAX(atomic_load(&linkInterval), NSProcessInfo.processInfo.lowPowerModeEnabled ? 1.0 / 60 : 0);
+    double refresh = effectiveRefresh();
     int fit = refresh > 0 ? MAX(1, (int)llround(period / refresh)) : generated + 1;
     int shown = MIN(generated + 1, fit);
     int picks[kMaxGenerated + 1];
@@ -596,8 +606,8 @@ static void presentSlot(int slot, int generated, CFTimeInterval completedAt) {
         }
     }];
     // Back on after being switched off: reveal the overlay once it holds a fresh frame.
-    if (atomic_load(&overlayHidden) && atomic_load(&fgOn))
-        [cb addCompletedHandler:^(id<MTLCommandBuffer> done) { if (atomic_load(&fgOn)) setOverlayHidden(NO); }];
+    if (atomic_load(&overlayHidden) && fgShowing())
+        [cb addCompletedHandler:^(id<MTLCommandBuffer> done) { if (fgShowing()) setOverlayHidden(NO); }];
     [cb commit];
     if (show.index >= 0) bump(kGenerated);
 }
@@ -626,13 +636,36 @@ static void startDisplayLink(CAMetalLayer *layer) {
 // Encodes frame generation for one real frame into `cb`. `targetRead` (may be nil) is called once
 // every read of the game's frame `target` is encoded, before LSFG's own work (the Metal 4 path
 // lets the game continue from there). Not called if the frame isn't used.
-static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, void (^targetRead)(id<MTLCommandBuffer>)) {
-    if (!atomic_load(&fgOn)) {
-        // Switched off: the game presents its own frames again; prime LSFG afresh when back on.
-        if (atomic_load(&overlayState) == 2) setOverlayHidden(YES);
-        fgWarmup = 1;
-        return;
+// True while frames should be generated and shown: frame generation is on, and the game isn't
+// running so fast that no generated frame would fit between its own (above about half the
+// display's refresh rate, e.g. 80 fps menus on 120 Hz). Otherwise the game presents its own frames,
+// LSFG does no work, and it's primed afresh when it resumes. Called once per real frame.
+static BOOL fgShouldRun(void) {
+    static CFTimeInterval lastFrame, gameInterval;
+    CFTimeInterval now = CACurrentMediaTime(), dt = now - lastFrame;
+    lastFrame = now;
+    if (dt > 0.002 && dt < 0.25) gameInterval = gameInterval > 0 ? gameInterval * 0.9 + dt * 0.1 : dt;
+
+    // Hysteresis around the point where a generated frame starts to fit (1.5 refreshes).
+    double refresh = effectiveRefresh();
+    BOOL aside = atomic_load(&fgSteppedAside);
+    if (refresh > 0 && gameInterval > 0) {
+        if (!aside && gameInterval < 1.45 * refresh) {
+            atomic_store(&fgSteppedAside, true); aside = YES;
+            lsfg_log(@"game at %.0f fps, above half the %.0f Hz display: showing its own frames", 1 / gameInterval, 1 / refresh);
+        } else if (aside && gameInterval > 1.6 * refresh) {
+            atomic_store(&fgSteppedAside, false); aside = NO;
+            lsfg_log(@"game at %.0f fps: frame generation back on", 1 / gameInterval);
+        }
     }
+    if (atomic_load(&fgOn) && !aside) return YES;
+    if (atomic_load(&overlayState) == 2) setOverlayHidden(YES);
+    fgWarmup = 1;
+    return NO;
+}
+
+
+static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, void (^targetRead)(id<MTLCommandBuffer>)) {
     int state = atomic_load(&fgState);
     if (state == 0) fgCreateContext(cb.device, target);
     if (state != 2) return;
@@ -733,6 +766,7 @@ static void fgEncodeMetal4(id<MTL4CommandQueue> queue, id<MTLTexture> target) {
         copied = [target.device newSharedEvent];
         lsfg_log(@"frame generation on the Metal 4 path");
     }
+    if (!fgShouldRun()) return;
     uint64_t n = ++frame;
     [queue signalEvent:submitted value:n];
     id<MTLCommandBuffer> cb = [fgQueue commandBuffer];
@@ -882,7 +916,7 @@ static void installPresentHooks(void) {
                 id<MTLTexture> target = fgAvailable ? objc_getAssociatedObject(self, &kDrawableTargetKey) : nil;
                 if (target) {
                     objc_setAssociatedObject(self, &kDrawableTargetKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                    fgEncode(self, target, nil);
+                    if (fgShouldRun()) fgEncode(self, target, nil);
                 }
                 // Every command buffer the game commits counts toward GPU busy time (ours don't).
                 id<MTLCommandQueue> owner = [(id<MTLCommandBuffer>)self commandQueue];
