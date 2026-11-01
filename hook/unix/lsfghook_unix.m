@@ -261,6 +261,15 @@ static void loadConfig(void) {
         NSDictionary *games = root[@"games"];
         if ([games isKindOfClass:NSDictionary.class]) applyProfile(games[exe]);
     }
+    // Environment variables (e.g. in the bottle's cxbottle.conf) win over profiles.json, so say so:
+    // they also pin those settings against live changes from the app.
+    static dispatch_once_t warned;
+    dispatch_once(&warned, ^{
+        NSMutableArray *set = [NSMutableArray array];
+        for (NSString *name in @[@"LSFG_FG", @"LSFG_PERFORMANCE", @"LSFG_FLOW_SCALE", @"LSFG_BUFFER_MS", @"LSFG_MULTIPLIER"])
+            if (getenv(name.UTF8String)) [set addObject:name];
+        if (set.count) lsfg_log(@"environment overrides the profile (the app can't change these): %@", [set componentsJoinedByString:@", "]);
+    });
     const char *v;
     if ((v = getenv("LSFG_FG"))) config.enabled = v[0] != '0';
     if ((v = getenv("LSFG_PERFORMANCE"))) config.performance = v[0] != '0';
