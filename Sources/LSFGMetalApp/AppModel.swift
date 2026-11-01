@@ -7,6 +7,8 @@ final class AppModel {
     private(set) var status = SystemStatus()
     private(set) var games: [Game] = []
     private(set) var profiles = ProfileFile.load()
+    /// Each game's own settings from its folder (`.lsfg/profile.json`), when it has any.
+    private(set) var folderProfiles: [Game.ID: GameProfile] = [:]
     private(set) var live = LiveStats.Snapshot()
     private(set) var isChecking = false
     private(set) var buildProgress: Double?
@@ -40,6 +42,14 @@ final class AppModel {
                 return game
             }
         games = (scanned + custom).sorted(by: Self.order)
+        folderProfiles = Dictionary(uniqueKeysWithValues: games.compactMap { game in
+            GameFolderProfile.load(for: game).map { (game.id, $0) }
+        })
+        // Move settings older versions kept in profiles.json (by .exe name) into the game folders.
+        for game in games where folderProfiles[game.id] == nil
+            && ProfileFile.keys(for: game).contains(where: { profiles.games[$0] != nil }) {
+            setProfile(profiles.profile(for: game), for: game)
+        }
         if selection == nil || selectedGame == nil { selection = games.first?.id }
     }
 
@@ -87,6 +97,7 @@ final class AppModel {
             game.isCustom = true
             games.append(game)
             games.sort(by: Self.order)
+            folderProfiles[game.id] = GameFolderProfile.load(for: game)
             var updated = profiles
             updated.custom.append(exe.path)
             save(updated)
@@ -102,6 +113,8 @@ final class AppModel {
         updated.custom.removeAll { $0 == game.exe.path }
         updated.setProfile(nil, for: game)
         save(updated)
+        GameFolderProfile.remove(for: game)
+        folderProfiles[game.id] = nil
         if selection == game.exe { selection = games.first?.id }
     }
 
@@ -112,20 +125,32 @@ final class AppModel {
 
     // MARK: Profiles
 
-    func profile(for game: Game) -> GameProfile { profiles.profile(for: game) }
-    func hasCustomProfile(_ game: Game) -> Bool { ProfileFile.keys(for: game).contains { profiles.games[$0] != nil } }
+    func profile(for game: Game) -> GameProfile { folderProfiles[game.id] ?? profiles.profile(for: game) }
 
-    func setProfile(_ profile: GameProfile, for game: Game) {
-        var updated = profiles
-        updated.setProfile(profile == updated.default ? nil : profile, for: game)
-        save(updated)
+    func hasCustomProfile(_ game: Game) -> Bool {
+        folderProfiles[game.id] != nil || ProfileFile.keys(for: game).contains { profiles.games[$0] != nil }
     }
 
-    func resetProfile(for game: Game) {
+    /// Saves the game's settings in its folder (removed when they match the defaults).
+    func setProfile(_ profile: GameProfile, for game: Game) {
+        // Settings saved by .exe name in profiles.json by older versions would otherwise come back.
         var updated = profiles
         updated.setProfile(nil, for: game)
         save(updated)
+        if profile == profiles.default {
+            GameFolderProfile.remove(for: game)
+            folderProfiles[game.id] = nil
+            return
+        }
+        do {
+            try GameFolderProfile.save(profile, for: game)
+            folderProfiles[game.id] = profile
+        } catch {
+            self.error = error.localizedDescription
+        }
     }
+
+    func resetProfile(for game: Game) { setProfile(profiles.default, for: game) }
 
     private func save(_ updated: ProfileFile) {
         guard updated != profiles else { return }

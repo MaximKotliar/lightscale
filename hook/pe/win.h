@@ -22,3 +22,6 @@ DECLSPEC_IMPORT DWORD WINAPI GetLastError(void);
 DECLSPEC_IMPORT NTSTATUS WINAPI NtQueryVirtualMemory(HANDLE process, const void *addr, int info_class,
                                                      void *buffer, SIZE_T len, SIZE_T *ret_len);
 DECLSPEC_IMPORT HMODULE WINAPI GetModuleHandleW(const WCHAR *name);
+DECLSPEC_IMPORT DWORD WINAPI GetModuleFileNameW(HMODULE mod, WCHAR *buf, DWORD size);
+DECLSPEC_IMPORT HANDLE WINAPI GetProcessHeap(void);
+DECLSPEC_IMPORT BOOL WINAPI HeapFree(HANDLE heap, DWORD flags, void *mem);

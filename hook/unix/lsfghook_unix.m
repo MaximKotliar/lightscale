@@ -261,18 +261,38 @@ static void applyProfile(NSDictionary *p) {
     if ([p[@"multiplier"] isKindOfClass:NSNumber.class]) config.multiplier = [p[@"multiplier"] intValue];
 }
 
+// The running .exe as a Unix path, sent by the PE side when it loads (nil until then).
+static NSString *exePath;
+
+static NSString *profilesPath(void) {
+    return [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/lsfg-metal/profiles.json"];
+}
+
+// The game folder's own settings: .lsfg/profile.json next to the .exe or up to 3 folders above it
+// (the app puts it next to the proxy DLL, so launchers and helper .exes in subfolders share it).
+static NSString *gameProfilePath(void) {
+    NSString *dir = exePath.stringByDeletingLastPathComponent;
+    for (int level = 0; dir.length > 1 && level <= 3; level++, dir = dir.stringByDeletingLastPathComponent) {
+        NSString *candidate = [dir stringByAppendingPathComponent:@".lsfg/profile.json"];
+        if ([NSFileManager.defaultManager fileExistsAtPath:candidate]) return candidate;
+    }
+    return nil;
+}
+
 static void loadConfig(void) {
     config.enabled = YES; config.performance = YES; config.multiplier = 2;
     config.flowScale = 1.0f; config.bufferMs = 8.0f;
-    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/lsfg-metal/profiles.json"];
-    NSData *data = [NSData dataWithContentsOfFile:path];
+    NSData *data = [NSData dataWithContentsOfFile:profilesPath()];
     NSDictionary *root = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
-    NSString *exe = NSProcessInfo.processInfo.processName.lowercaseString;
+    NSString *exe = (exePath.lastPathComponent ?: NSProcessInfo.processInfo.processName).lowercaseString;
     if ([root isKindOfClass:NSDictionary.class]) {
         applyProfile(root[@"default"]);
         NSDictionary *games = root[@"games"];
         if ([games isKindOfClass:NSDictionary.class]) applyProfile(games[exe]);
     }
+    NSString *gamePath = gameProfilePath();
+    NSData *gameData = gamePath ? [NSData dataWithContentsOfFile:gamePath] : nil;
+    if (gameData) applyProfile([NSJSONSerialization JSONObjectWithData:gameData options:0 error:nil]);
     // Environment variables (e.g. in the bottle's cxbottle.conf) win over profiles.json, so say so:
     // they also pin those settings against live changes from the app.
     static dispatch_once_t warned;
@@ -291,7 +311,7 @@ static void loadConfig(void) {
     config.multiplier = MAX(2, MIN(config.multiplier, kMaxGenerated + 1));
     config.flowScale = fminf(fmaxf(config.flowScale, 0.25f), 1.0f);
     config.bufferMs = fminf(fmaxf(config.bufferMs, 0.0f), 50.0f);
-    lsfg_log(@"profile for %@: frame generation %s %dx, %s mode, flow %.2f, buffer %.0f ms", exe, config.enabled ? "on" : "off", config.multiplier,
+    lsfg_log(@"profile for %@%@: frame generation %s %dx, %s mode, flow %.2f, buffer %.0f ms", exe, gamePath ? [@" from " stringByAppendingString:gamePath] : @"", config.enabled ? "on" : "off", config.multiplier,
              config.performance ? "performance" : "quality", config.flowScale, config.bufferMs);
 }
 
@@ -300,15 +320,8 @@ static void setOverlayHidden(BOOL hidden);
 
 // The app saves profiles.json on every change; pick changes up while the game runs (checked
 // once a second). On/off and the pacing buffer apply at once; the rest rebuilds the context.
-static void reloadConfigIfChanged(void) {
-    static struct timespec seen;
-    struct stat st;
-    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/lsfg-metal/profiles.json"];
-    if (stat(path.fileSystemRepresentation, &st) != 0) return;
-    BOOL first = seen.tv_sec == 0;
-    if (!first && st.st_mtimespec.tv_sec == seen.tv_sec && st.st_mtimespec.tv_nsec == seen.tv_nsec) return;
-    seen = st.st_mtimespec;
-    if (first) return; // read at startup already
+// Re-reads settings and applies what changed while the game runs.
+static void applyConfigChanges(void) {
     typeof(config) before = config;
     loadConfig();
     if (config.enabled != before.enabled) {
@@ -317,6 +330,22 @@ static void reloadConfigIfChanged(void) {
     }
     if (config.multiplier != before.multiplier || config.performance != before.performance || config.flowScale != before.flowScale)
         fgRebuild();
+}
+
+// Called once a second: reloads when profiles.json or the game folder's profile changes (or
+// appears or goes away).
+static void reloadConfigIfChanged(void) {
+    static NSString *seen;
+    NSMutableString *signature = [NSMutableString string];
+    for (NSString *path in @[profilesPath(), gameProfilePath() ?: @""]) {
+        struct stat st;
+        if (path.length && stat(path.fileSystemRepresentation, &st) == 0)
+            [signature appendFormat:@"%@:%ld.%ld;", path, (long)st.st_mtimespec.tv_sec, st.st_mtimespec.tv_nsec];
+    }
+    if (!seen) { seen = signature; return; } // read at startup already
+    if ([signature isEqualToString:seen]) return;
+    seen = signature;
+    applyConfigChanges();
 }
 
 static BOOL envOn(const char *name, BOOL fallback) {
@@ -986,6 +1015,8 @@ __attribute__((constructor)) static void lsfg_unix_init(void) {
                  NSProcessInfo.processInfo.arguments.firstObject ?: @"?", info.dli_fname ?: "?");
         const char *enable = getenv("LSFG_ENABLE");
         if (enable && enable[0] == '0') { lsfg_log(@"LSFG_ENABLE=0, no hooks installed"); return; }
+        // LSFG_EXE_PATH: pretend to be this .exe (tests; under Wine the PE side sends the real path).
+        if (getenv("LSFG_EXE_PATH")) exePath = @(getenv("LSFG_EXE_PATH"));
         loadConfig();
         // Loaded even when the profile has frame generation off, so it can be switched on live.
         fgAvailable = envOn("LSFG_READABLE", YES) && loadBridge();
@@ -1004,4 +1035,18 @@ static NTSTATUS lsfg_ping(void *args) {
     *(uint32_t *)args = 0x4C534647; // 'LSFG'
     return 0;
 }
-__attribute__((visibility("default"))) const void *__wine_unix_call_funcs[] = { (const void *)lsfg_ping };
+// The PE side sends the running .exe's Unix path once it loads; settings can now come from the
+// game folder's .lsfg/profile.json.
+static NTSTATUS lsfg_set_exe(void *args) {
+    const char *path = *(const char **)args;
+    if (!path || exePath) return 0;
+    @autoreleasepool {
+        exePath = [NSString stringWithUTF8String:path];
+        lsfg_log(@"running %@", exePath);
+        applyConfigChanges();
+    }
+    return 0;
+}
+__attribute__((visibility("default"))) const void *__wine_unix_call_funcs[] = {
+    (const void *)lsfg_ping, (const void *)lsfg_set_exe,
+};

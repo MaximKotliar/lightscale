@@ -61,8 +61,8 @@ struct ProfileFile: Codable, Equatable, Sendable {
     static func key(for game: Game) -> String { game.exe.lastPathComponent.lowercased() }
 
     /// Every name the game may run under: its own .exe first, then the other .exe files in its
-    /// folder. Launchers often start a sibling (TLOU Part II lists tlou-ii-l.exe but runs
-    /// tlou-ii.exe), and the hook looks its settings up by the name of the running program.
+    /// folder. Older versions stored settings here by .exe name; they're still read as a fallback
+    /// and cleared when the game's folder profile is written.
     static func keys(for game: Game) -> [String] {
         let main = key(for: game)
         let folder = game.exe.deletingLastPathComponent()
@@ -92,5 +92,35 @@ struct ProfileFile: Codable, Equatable, Sendable {
     /// Stores `profile` under every name the game may run as (nil removes it).
     mutating func setProfile(_ profile: GameProfile?, for game: Game) {
         for key in Self.keys(for: game) { games[key] = profile }
+    }
+}
+
+/// A game's own settings: `.lsfg/profile.json` in the game's folder, next to the proxy DLL. The
+/// hook looks for it from the running .exe's folder and up to 3 folders above, so every program
+/// in the game (launchers, renamed or helper .exes, subfolders) shares it. It overrides
+/// profiles.json, and the hook picks up changes within a second.
+enum GameFolderProfile {
+    static func url(for game: Game) -> URL { game.folder.appending(path: ".lsfg/profile.json") }
+
+    static func load(for game: Game) -> GameProfile? {
+        guard let data = try? Data(contentsOf: url(for: game)) else { return nil }
+        return try? JSONDecoder().decode(GameProfile.self, from: data)
+    }
+
+    static func save(_ profile: GameProfile, for game: Game) throws {
+        let file = url(for: game)
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(profile).write(to: file, options: .atomic)
+    }
+
+    static func remove(for game: Game) {
+        let file = url(for: game)
+        try? FileManager.default.removeItem(at: file)
+        let folder = file.deletingLastPathComponent()
+        if (try? FileManager.default.contentsOfDirectory(atPath: folder.path))?.isEmpty == true {
+            try? FileManager.default.removeItem(at: folder)
+        }
     }
 }

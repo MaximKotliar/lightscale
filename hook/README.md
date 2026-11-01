@@ -48,12 +48,15 @@ Cap the game at half your display's refresh rate (30 on 60 Hz, 60 on 120 Hz, or 
 
 ## Settings
 
-Per-game profiles live in `~/Library/Application Support/lsfg-metal/profiles.json`, and LSFG Metal.app edits them. The hook checks the file once a second while the game runs: on/off and the pacing buffer apply at once; multiplier, mode and motion detail rebuild the LSFG context in the background (0.05–0.2 s) and swap it in on the next frame, whose output only primes the new context:
+Each game's settings live in `.lsfg/profile.json` in the game's folder, next to the proxy DLL. The hook's PE side tells the native side the running .exe's path, and the hook looks for that file in the .exe's folder and up to 3 folders above, so launchers, renamed and helper .exes share it. `~/Library/Application Support/lsfg-metal/profiles.json` holds the default (and, from older versions, settings keyed by .exe name, used only when a game has no folder profile). LSFG Metal.app edits both. The hook checks them once a second while the game runs: on/off and the pacing buffer apply at once; multiplier, mode and motion detail rebuild the LSFG context in the background (0.05–0.2 s) and swap it in on the next frame, whose output only primes the new context:
 
 ```json
+// <game folder>/.lsfg/profile.json
+{ "enabled": true, "multiplier": 4, "performance": false, "flowScale": 0.75, "bufferMs": 8 }
+
+// ~/Library/Application Support/lsfg-metal/profiles.json
 { "default": { "enabled": true, "multiplier": 2, "performance": true, "flowScale": 1.0, "bufferMs": 8 },
-  "games": { "witcher3.exe": { "enabled": true, "multiplier": 4, "performance": false, "flowScale": 0.75, "bufferMs": 8 } },
-  "custom": [] }
+  "games": {}, "custom": [] }
 ```
 
 The hook reads them when the game starts, matching on the exe name. These environment variables override them (for example in the bottle's `[EnvironmentVariables]`):

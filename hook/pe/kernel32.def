@@ -7,3 +7,6 @@ WriteFile
 ExitProcess
 GetLastError
 GetModuleHandleW
+GetModuleFileNameW
+GetProcessHeap
+HeapFree

@@ -104,3 +104,20 @@ import Testing
     file.setProfile(nil, for: game)
     #expect(file.games.isEmpty)
 }
+
+@Test func gameFolderProfileRoundTrip() throws {
+    let folder = FileManager.default.temporaryDirectory.appending(path: "lsfg-folder-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let game = Game(name: "Test", bottle: Bottle(url: folder), exe: folder.appending(path: "game.exe"), status: .blocked("test"))
+    #expect(GameFolderProfile.load(for: game) == nil)
+    try GameFolderProfile.save(GameProfile(enabled: false, multiplier: 4), for: game)
+    #expect(FileManager.default.fileExists(atPath: folder.appending(path: ".lsfg/profile.json").path))
+    let loaded = GameFolderProfile.load(for: game)
+    #expect(loaded?.enabled == false && loaded?.multiplier == 4)
+    // The hook reads these keys.
+    let json = try JSONSerialization.jsonObject(with: Data(contentsOf: GameFolderProfile.url(for: game))) as? [String: Any]
+    #expect(Set(json?.keys.map { $0 } ?? []) == ["enabled", "multiplier", "performance", "flowScale", "bufferMs"])
+    GameFolderProfile.remove(for: game)
+    #expect(!FileManager.default.fileExists(atPath: folder.appending(path: ".lsfg").path))
+}
