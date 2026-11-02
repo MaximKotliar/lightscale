@@ -15,6 +15,7 @@ struct GameDetailView: View {
                 } else {
                     if let live = model.liveStats(for: game) { LiveCard(live: live) }
                     ProfileCard(game: game, model: model)
+                    UpscalerCard(game: game, model: model)
                     if model.status.crossOver != nil { GPTKCard(game: game, model: model) }
                 }
             }
@@ -102,6 +103,47 @@ private struct ProfileCard: View {
                 }
             }
         }
+    }
+}
+
+/// What upscales the game's DLSS: MetalFX (what D3DMetal does) or Arm Neural Super Sampling.
+private struct UpscalerCard: View {
+    let game: Game
+    let model: AppModel
+
+    private var profile: Binding<GameProfile> {
+        Binding(get: { model.profile(for: game) }, set: { model.setProfile($0, for: game) })
+    }
+
+    var body: some View {
+        let nss = profile.wrappedValue.upscaler == "nss"
+        let ready = NSSFiles.isReady
+        Card(title: "Upscaling") {
+            SettingRow(title: "Upscaler", caption: caption(nss: nss, ready: ready), warn: nss && !ready) {
+                Picker("Upscaler", selection: profile.upscaler) {
+                    Text("MetalFX").tag("metalfx")
+                    Text("NSS").tag("nss")
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+            SettingRow(title: "NSS quality", caption: "Mid is the best trade. High costs about 3× as much.") {
+                Picker("NSS quality", selection: profile.nssQuality) {
+                    Text("Low").tag("low")
+                    Text("Mid").tag("mid")
+                    Text("High").tag("high")
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+            .disabled(!nss)
+        }
+    }
+
+    private func caption(nss: Bool, ready: Bool) -> String {
+        if !nss { return "Pick DLSS in the game. D3DMetal upscales it with MetalFX." }
+        if !ready { return "NSS files aren't installed (\(NSSFiles.directory.path))." }
+        return "Pick DLSS in the game; NSS replaces MetalFX. Sharper, about 1.5–2.5 ms more GPU time per frame."
     }
 }
 

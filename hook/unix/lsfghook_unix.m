@@ -255,7 +255,8 @@ static void trackPresented(id<CAMetalDrawable> d) {
 }
 
 // The effective settings for this game: defaults, then profiles.json, then environment.
-static struct { BOOL enabled, performance; int multiplier; float flowScale, bufferMs; } config = { YES, YES, 2, 1.0f, 8.0f };
+// upscaler: 0 MetalFX (as the game asked), 1 NSS in its place. nssQuality: 0 low, 1 mid, 2 high.
+static struct { BOOL enabled, performance; int multiplier; float flowScale, bufferMs; int upscaler, nssQuality; } config = { YES, YES, 2, 1.0f, 8.0f, 0, 1 };
 
 static void applyProfile(NSDictionary *p) {
     if (![p isKindOfClass:NSDictionary.class]) return;
@@ -264,6 +265,11 @@ static void applyProfile(NSDictionary *p) {
     if ([p[@"flowScale"] isKindOfClass:NSNumber.class]) config.flowScale = [p[@"flowScale"] floatValue];
     if ([p[@"bufferMs"] isKindOfClass:NSNumber.class]) config.bufferMs = [p[@"bufferMs"] floatValue];
     if ([p[@"multiplier"] isKindOfClass:NSNumber.class]) config.multiplier = [p[@"multiplier"] intValue];
+    if ([p[@"upscaler"] isKindOfClass:NSString.class]) config.upscaler = [p[@"upscaler"] isEqualToString:@"nss"] ? 1 : 0;
+    if ([p[@"nssQuality"] isKindOfClass:NSString.class]) {
+        NSString *q = p[@"nssQuality"];
+        config.nssQuality = [q isEqualToString:@"low"] ? 0 : [q isEqualToString:@"high"] ? 2 : 1;
+    }
 }
 
 // The running .exe as a Unix path, sent by the PE side when it loads (nil until then).
@@ -286,7 +292,7 @@ static NSString *gameProfilePath(void) {
 
 static void loadConfig(void) {
     config.enabled = YES; config.performance = YES; config.multiplier = 2;
-    config.flowScale = 1.0f; config.bufferMs = 8.0f;
+    config.flowScale = 1.0f; config.bufferMs = 8.0f; config.upscaler = 0; config.nssQuality = 1;
     NSData *data = [NSData dataWithContentsOfFile:profilesPath()];
     NSDictionary *root = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
     NSString *exe = (exePath.lastPathComponent ?: NSProcessInfo.processInfo.processName).lowercaseString;
@@ -303,7 +309,7 @@ static void loadConfig(void) {
     static dispatch_once_t warned;
     dispatch_once(&warned, ^{
         NSMutableArray *set = [NSMutableArray array];
-        for (NSString *name in @[@"LSFG_FG", @"LSFG_PERFORMANCE", @"LSFG_FLOW_SCALE", @"LSFG_BUFFER_MS", @"LSFG_MULTIPLIER"])
+        for (NSString *name in @[@"LSFG_FG", @"LSFG_PERFORMANCE", @"LSFG_FLOW_SCALE", @"LSFG_BUFFER_MS", @"LSFG_MULTIPLIER", @"LSFG_UPSCALER", @"LSFG_NSS_QUALITY"])
             if (getenv(name.UTF8String)) [set addObject:name];
         if (set.count) lsfg_log(@"environment overrides the profile (the app can't change these): %@", [set componentsJoinedByString:@", "]);
     });
@@ -313,11 +319,14 @@ static void loadConfig(void) {
     if ((v = getenv("LSFG_FLOW_SCALE"))) config.flowScale = (float)atof(v);
     if ((v = getenv("LSFG_BUFFER_MS"))) config.bufferMs = (float)atof(v);
     if ((v = getenv("LSFG_MULTIPLIER"))) config.multiplier = atoi(v);
+    if ((v = getenv("LSFG_UPSCALER"))) config.upscaler = strcmp(v, "nss") == 0 ? 1 : 0;
+    if ((v = getenv("LSFG_NSS_QUALITY"))) config.nssQuality = strcmp(v, "low") == 0 ? 0 : strcmp(v, "high") == 0 ? 2 : 1;
     config.multiplier = MAX(2, MIN(config.multiplier, kMaxGenerated + 1));
     config.flowScale = fminf(fmaxf(config.flowScale, 0.25f), 1.0f);
     config.bufferMs = fminf(fmaxf(config.bufferMs, 0.0f), 50.0f);
     lsfg_log(@"profile for %@%@: frame generation %s %dx, %s mode, flow %.2f, buffer %.0f ms", exe, gamePath ? [@" from " stringByAppendingString:gamePath] : @"", config.enabled ? "on" : "off", config.multiplier,
              config.performance ? "performance" : "quality", config.flowScale, config.bufferMs);
+    lsfg_log(@"profile for %@: upscaler %s", exe, config.upscaler == 1 ? (config.nssQuality == 0 ? "NSS low" : config.nssQuality == 2 ? "NSS high" : "NSS mid") : "MetalFX");
 }
 
 static void fgRebuild(void);
@@ -1122,6 +1131,8 @@ static void installLayerHook(void) {
 
 #pragma mark - Setup
 
+static NSString *nssStatsLine(void);   // lsfg_nss.m
+
 static void startStatsTimer(void) {
     static dispatch_source_t timer;
     timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
@@ -1142,6 +1153,7 @@ static void startStatsTimer(void) {
         }
         shownCount = droppedCount = 0; shownSum = shownSumSq = shownMax = 0;
         os_unfair_lock_unlock(&pacingLock);
+        [line appendString:nssStatsLine()];
         if (line.length) lsfg_log(@"per second:%@", line);
         long fn = atomic_exchange(&frameGpuCount, 0), fu = atomic_exchange(&frameGpuUs, 0);
         long ln = atomic_exchange(&linkGpuCount, 0), lu = atomic_exchange(&linkGpuUs, 0);
@@ -1168,6 +1180,8 @@ static void startStatsTimer(void) {
     dispatch_resume(timer);
 }
 
+#include "lsfg_nss.m"
+
 __attribute__((constructor)) static void lsfg_unix_init(void) {
     @autoreleasepool {
         Dl_info info = {0};
@@ -1185,6 +1199,7 @@ __attribute__((constructor)) static void lsfg_unix_init(void) {
         captured = [NSMutableSet set];
         lsfg_log(@"frame generation %s", !fgAvailable ? "unavailable" : config.enabled ? "on" : "off");
         installLayerHook();
+        nssInstall();
         startStatsTimer();
     }
 }

@@ -87,6 +87,7 @@ fi
 
 mkdir -p "$ROOT/wine/x86_64-windows"
 cp "$BUILD/lsfghook.dll" "$BUILD/lsfghook.so" "$BUILD/liblsfgbridge.dylib" "$ROOT/wine/x86_64-windows/"
+mkdir -p "$ROOT/nss" && cp "$BUILD/nss.metallib" "$ROOT/nss/"   # NSS upscaler kernels (weights: see hook/README.md)
 if [ -d "$BUILD/baked" ]; then rm -rf "$ROOT/wine/x86_64-windows/baked"; cp -R "$BUILD/baked" "$ROOT/wine/x86_64-windows/baked"; fi
 echo "installed hook to $ROOT"
 

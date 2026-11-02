@@ -38,9 +38,13 @@ printf 'Wine builtin DLL\0' | dd of="$OUT/lsfghook.dll" bs=1 seek=64 conv=notrun
 cp "$OUT/lsfghook.dll" "$OUT/lsfghook.placeholder.dll"
 printf 'Wine placeholder DLL\0' | dd of="$OUT/lsfghook.placeholder.dll" bs=1 seek=64 conv=notrunc status=none
 
-clang -arch x86_64 -dynamiclib -O2 -Wall -fobjc-arc -mmacosx-version-min=14.0 \
-    -framework AppKit -framework Foundation -framework Metal -framework QuartzCore \
+clang -arch x86_64 -dynamiclib -O2 -Wall -fobjc-arc -mmacosx-version-min=14.0 -Wno-unguarded-availability-new \
+    -framework AppKit -framework Foundation -framework Metal -framework MetalFX -framework QuartzCore \
     -o "$OUT/lsfghook.so" unix/lsfghook_unix.m
+
+# NSS upscaler kernels (Arm Neural Super Sampling, ported from Arm's Apache-2.0 reference).
+xcrun metal -std=metal3.0 -O3 -c unix/nss/nss.metal -o "$OUT/obj/nss.air"
+xcrun metallib "$OUT/obj/nss.air" -o "$OUT/nss.metallib"
 codesign -s - -f "$OUT/lsfghook.so" 2>/dev/null
 
 # LSFG engine for the hook: the Swift package's C API, built for x86_64 like wineloader.

@@ -1,6 +1,17 @@
 import Foundation
 
 /// The built hook files the app installs (bundled in the app's Resources/Hook).
+/// Arm Neural Super Sampling: kernels (shipped with the hook) and Arm's weights (nss_high.bin,
+/// nss_midlow.bin, exported from Arm's Hugging Face release) in one folder the hook reads.
+enum NSSFiles {
+    static var directory: URL { HookFiles.root.appending(path: "nss") }
+    static var isReady: Bool {
+        ["nss.metallib", "nss_high.bin", "nss_midlow.bin"].allSatisfy {
+            FileManager.default.fileExists(atPath: directory.appending(path: $0).path)
+        }
+    }
+}
+
 enum HookFiles {
     static let required = ["lsfghook.dll", "lsfghook.so", "lsfghook.placeholder.dll", "liblsfgbridge.dylib",
                            "dinput8.dll", "version.dll"]
@@ -66,6 +77,12 @@ enum HookInstaller {
         try fm.createDirectory(at: HookFiles.builtinDir, withIntermediateDirectories: true)
         for file in ["lsfghook.dll", "lsfghook.so", "liblsfgbridge.dylib"] {
             try replace(HookFiles.builtinDir.appending(path: file), with: source.appending(path: file))
+        }
+        // NSS upscaler kernels (Arm's weights are installed separately, see NSSFiles).
+        let nssLib = source.appending(path: "nss.metallib")
+        if fm.fileExists(atPath: nssLib.path) {
+            try fm.createDirectory(at: NSSFiles.directory, withIntermediateDirectories: true)
+            try replace(NSSFiles.directory.appending(path: "nss.metallib"), with: nssLib)
         }
         // Pre-baked kernels, when the app was built with them.
         let baked = source.appending(path: "baked")

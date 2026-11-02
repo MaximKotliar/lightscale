@@ -12,14 +12,22 @@ struct GameProfile: Codable, Equatable, Sendable {
     /// The GPTK version this game should run with (nil: whichever CrossOver has). The app reads
     /// it; the hook ignores it.
     var gptk: String?
+    /// Upscaling when the game uses DLSS (D3DMetal turns it into MetalFX): "metalfx" leaves it to
+    /// MetalFX, "nss" runs Arm Neural Super Sampling in its place.
+    var upscaler = "metalfx"
+    /// NSS quality: "low", "mid" or "high".
+    var nssQuality = "mid"
 
-    init(enabled: Bool = true, multiplier: Int = 2, performance: Bool = true, flowScale: Double = 1.0, bufferMs: Double = 8.0, gptk: String? = nil) {
+    init(enabled: Bool = true, multiplier: Int = 2, performance: Bool = true, flowScale: Double = 1.0, bufferMs: Double = 8.0, gptk: String? = nil,
+         upscaler: String = "metalfx", nssQuality: String = "mid") {
         self.enabled = enabled
         self.multiplier = multiplier
         self.performance = performance
         self.flowScale = flowScale
         self.bufferMs = bufferMs
         self.gptk = gptk
+        self.upscaler = upscaler
+        self.nssQuality = nssQuality
     }
 
     // Missing keys (older files) fall back to defaults instead of discarding the profile.
@@ -32,6 +40,8 @@ struct GameProfile: Codable, Equatable, Sendable {
         flowScale = try c.decodeIfPresent(Double.self, forKey: .flowScale) ?? d.flowScale
         bufferMs = try c.decodeIfPresent(Double.self, forKey: .bufferMs) ?? d.bufferMs
         gptk = try c.decodeIfPresent(String.self, forKey: .gptk)
+        upscaler = try c.decodeIfPresent(String.self, forKey: .upscaler) ?? d.upscaler
+        nssQuality = try c.decodeIfPresent(String.self, forKey: .nssQuality) ?? d.nssQuality
     }
 
     /// Off / 2x / 4x as one value (0, 1, 2) for the slider.
