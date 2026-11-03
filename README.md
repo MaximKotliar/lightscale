@@ -38,8 +38,9 @@ Needs Xcode. The two engines are submodules, pinned to tested commits:
 
 Update one with `git -C vendor/nss-metal pull origin main` and commit the new pointer.
 
-NSS needs Arm's weights in `~/Library/Application Support/Lightscale/nss/` (see nss-metal's README for the export
-tool); without them the app offers MetalFX only.
+NSS ships with Arm's trained weights (from nss-metal). They're licensed by Arm under the Arm AI Model Community
+License, not with the rest of the app: using NSS means agreeing to its acceptable-use terms, which the app shows next
+to the NSS setting and under Help.
 
 ## How the hook works
 

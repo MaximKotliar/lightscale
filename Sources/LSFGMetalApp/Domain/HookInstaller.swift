@@ -1,10 +1,17 @@
 import Foundation
 
 /// The built hook files the app installs (bundled in the app's Resources/Hook).
-/// Arm Neural Super Sampling: kernels (shipped with the hook) and Arm's weights (nss_high.bin,
-/// nss_midlow.bin, exported from Arm's Hugging Face release) in one folder the hook reads.
+/// Arm Neural Super Sampling: kernels and Arm's weights (nss_high.bin, nss_midlow.bin, from nss-metal, with Arm's
+/// license and acceptable-use terms next to them), all shipped with the hook, in one folder the hook reads.
 enum NSSFiles {
     static var directory: URL { HookFiles.root.appending(path: "nss") }
+    /// Arm's license for the weights and its acceptable-use terms, as shipped with the app (or installed).
+    static func terms(_ file: String) -> URL? {
+        let candidates = [HookFiles.source?.appending(path: "NSSWeights/\(file)"), directory.appending(path: file)]
+        return candidates.compactMap { $0 }.first { FileManager.default.fileExists(atPath: $0.path) }
+    }
+    static let licenseFile = "Arm_AI_Model_Community_License_v1_0_PRE-1154.pdf"
+    static let acceptableUseFile = "ACCEPTABLE_USE.md"
     static var isReady: Bool {
         ["nss.metallib", "nss_high.bin", "nss_midlow.bin"].allSatisfy {
             FileManager.default.fileExists(atPath: directory.appending(path: $0).path)
@@ -98,11 +105,16 @@ enum HookInstaller {
         for file in ["lsfghook.dll", "lsfghook.so", "liblsfgbridge.dylib"] {
             try replace(HookFiles.builtinDir.appending(path: file), with: source.appending(path: file))
         }
-        // NSS upscaler kernels (Arm's weights are installed separately, see NSSFiles).
+        // NSS upscaler: kernels, and Arm's weights with their license files (Arm AI Model Community License).
         let nssLib = source.appending(path: "nss.metallib")
         if fm.fileExists(atPath: nssLib.path) {
             try fm.createDirectory(at: NSSFiles.directory, withIntermediateDirectories: true)
             try replace(NSSFiles.directory.appending(path: "nss.metallib"), with: nssLib)
+        }
+        let weights = source.appending(path: "NSSWeights")
+        for file in (try? fm.contentsOfDirectory(atPath: weights.path)) ?? [] {
+            try fm.createDirectory(at: NSSFiles.directory, withIntermediateDirectories: true)
+            try replace(NSSFiles.directory.appending(path: file), with: weights.appending(path: file))
         }
         // Pre-baked kernels, when the app was built with them.
         let baked = source.appending(path: "baked")

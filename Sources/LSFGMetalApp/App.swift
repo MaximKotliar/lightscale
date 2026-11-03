@@ -28,6 +28,11 @@ struct LSFGMetalApp: App {
                 Button("Check Setup…") { model.showingSetup = true }
                     .keyboardShortcut(",", modifiers: [.command, .shift])
             }
+            CommandGroup(after: .help) {
+                // Arm's license for the NSS weights: users must be able to see its terms
+                Button("NSS Acceptable Use Terms") { if let u = NSSFiles.terms(NSSFiles.acceptableUseFile) { NSWorkspace.shared.open(u) } }
+                Button("Arm AI Model Community License") { if let u = NSSFiles.terms(NSSFiles.licenseFile) { NSWorkspace.shared.open(u) } }
+            }
         }
     }
 }

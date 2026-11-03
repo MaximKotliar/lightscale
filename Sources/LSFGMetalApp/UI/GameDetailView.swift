@@ -1,3 +1,4 @@
+import AppKit
 import Charts
 import SwiftUI
 
@@ -137,13 +138,14 @@ private struct UpscalerCard: View {
                     .pickerStyle(.segmented)
                     .labelsHidden()
                 }
+                NSSTermsNote()
             }
         }
     }
 
     private func caption(nss: Bool, ready: Bool) -> String {
         if !nss { return "Pick DLSS in the game. D3DMetal upscales it with MetalFX." }
-        if !ready { return "NSS files aren't installed (\(NSSFiles.directory.path))." }
+        if !ready { return "NSS files aren't installed yet: uninstall and install the game again." }
         return "Pick DLSS in the game; NSS replaces MetalFX: a sharper, more stable image at about the same GPU cost (Mid)."
     }
 }
@@ -255,6 +257,35 @@ private struct SliderRow: View {
 
 /// One settings line: title (and optional caption) on the left, the control in a fixed right column,
 /// so every control in the card lines up.
+/// Arm's license for the NSS weights requires telling users that its acceptable-use terms apply.
+struct NSSTermsNote: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("NSS uses Arm's Neural Super Sampling model, licensed under the Arm AI Model Community License. By using NSS you agree to its acceptable-use terms.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 12) {
+                NSSTermsButton(title: "Acceptable Use", file: NSSFiles.acceptableUseFile)
+                NSSTermsButton(title: "Arm License", file: NSSFiles.licenseFile)
+            }
+            .font(.caption)
+        }
+    }
+}
+
+struct NSSTermsButton: View {
+    let title: String
+    let file: String
+
+    var body: some View {
+        if let url = NSSFiles.terms(file) {
+            Button(title) { NSWorkspace.shared.open(url) }
+                .buttonStyle(.link)
+        }
+    }
+}
+
 private struct SettingRow<Control: View>: View {
     let title: String
     var caption: String? = nil

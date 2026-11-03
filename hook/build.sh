@@ -45,6 +45,8 @@ clang -arch x86_64 -dynamiclib -O2 -Wall -fobjc-arc -mmacosx-version-min=14.0 -W
     -framework AppKit -framework Foundation -framework Metal -framework MetalFX -framework QuartzCore \
     -o "$OUT/lsfghook.so" unix/lsfghook_unix.m "$NSS/Sources/NSSMetal/NSSUpscaler.m"
 "$NSS/scripts/build-metallib.sh" "$OUT/nss.metallib"
+# Arm's NSS weights with their license, notices and acceptable-use terms (the app installs them next to the kernels)
+rm -rf "$OUT/NSSWeights" && cp -R "$NSS/Sources/NSSMetal/Weights" "$OUT/NSSWeights"
 codesign -s - -f "$OUT/lsfghook.so" 2>/dev/null
 
 # LSFG engine for the hook: lsfg-metal's C API (vendor/lsfg-metal), built for x86_64 like wineloader.

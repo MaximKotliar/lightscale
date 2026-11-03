@@ -93,6 +93,7 @@ The hook reads them when the game starts, matching on the exe name. These enviro
 `unix/lsfg_nss_hook.m` catches `-[<MetalFX temporal scaler> encodeToCommandBuffer:]` (D3DMetal turns a game's DLSS
 calls into MetalFX temporal upscaling). When the game's profile says `"upscaler": "nss"`, it hands the same inputs to
 an `NSSUpscaler` from [nss-metal](../vendor/nss-metal) (compiled into `lsfghook.so`) and encodes that instead;
-otherwise MetalFX runs as usual. Either way it times the call for the log's `upscale GPU` figure. Weights and kernels
-come from `~/Library/Application Support/Lightscale/nss/` (`LSFG_NSS_DIR` overrides it). `test/nss_perf.sh` drives a
+otherwise MetalFX runs as usual. Either way it times the call for the log's `upscale GPU` figure. Kernels and Arm's weights
+(shipped with nss-metal, under the Arm AI Model Community License; the app shows its acceptable-use terms) are
+installed to `~/Library/Application Support/Lightscale/nss/` (`LSFG_NSS_DIR` overrides it). `test/nss_perf.sh` drives a
 real Metal 4 MetalFX scaler with the hook loaded, without a game.

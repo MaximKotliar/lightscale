@@ -28,6 +28,7 @@ for f in lsfghook.dll lsfghook.so lsfghook.placeholder.dll liblsfgbridge.dylib d
 done
 [ -d "$ROOT/hook/build/baked" ] && cp -R "$ROOT/hook/build/baked" "$APP/Contents/Resources/Hook/baked"
 cp "$ROOT/hook/build/nss.metallib" "$APP/Contents/Resources/Hook/"
+cp -R "$ROOT/hook/build/NSSWeights" "$APP/Contents/Resources/Hook/NSSWeights"   # Arm's license terms ride along
 # GPTK versions the app can switch CrossOver between. Each source folder holds external/ and
 # wine/ like CrossOver's lib64/apple_gptk. Apple's license allows non-commercial copies that keep
 # its notices; these come from this Mac and are never committed. Override with GPTK_SOURCES
