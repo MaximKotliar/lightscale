@@ -164,7 +164,7 @@ private struct UpscalerCard: View {
             }
             if !dlss && (m == "metalfx" || m == "nss") { NoDLSSNote(game: game) }
             if m == "nss" {
-                SettingRow(title: "NSS quality", caption: "Fast: about ⅔ of Mid's GPU time, fine patterns a little softer. High costs about 3× Mid.") {
+                SettingRow(title: "NSS quality", caption: "Fast: about ⅔ of Mid's GPU time, as sharp in motion, fine detail in still scenes like MetalFX. High costs about 3× Mid.") {
                     Picker("NSS quality", selection: profile.nssQuality) {
                         if profile.wrappedValue.nssQuality == "low" { Text("Low").tag("low") }
                         Text("Fast").tag("fast")
