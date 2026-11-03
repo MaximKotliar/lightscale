@@ -17,7 +17,6 @@ struct GameDetailView: View {
                 } else {
                     if let live = model.liveStats(for: game) { LiveCard(live: live) }
                     ProfileCard(game: game, model: model)
-                    ScalingCard(game: game, model: model)
                     UpscalerCard(game: game, model: model)
                     if model.status.crossOver != nil { GPTKCard(game: game, model: model) }
                 }
@@ -109,7 +108,8 @@ private struct ProfileCard: View {
     }
 }
 
-/// What upscales the game's DLSS: MetalFX (what D3DMetal does) or Arm Neural Super Sampling.
+/// How the game is upscaled, one choice: its own DLSS (D3DMetal turns it into MetalFX, or NSS takes MetalFX's place),
+/// or Lossless Scaling's upscalers, which scale the finished frames up to the window in any game.
 private struct UpscalerCard: View {
     let game: Game
     let model: AppModel
@@ -118,35 +118,52 @@ private struct UpscalerCard: View {
         Binding(get: { model.profile(for: game) }, set: { model.setProfile($0, for: game) })
     }
 
-    var body: some View {
-        let nss = profile.wrappedValue.upscaler == "nss"
-        let ready = NSSFiles.isReady
-        Card(title: "Upscaling") {
-            if !game.upscalers.contains(.dlss) {
-                NoDLSSNote(game: game)
-            } else {
-                if !game.bottle.dlssEnabled {
-                    Label("DLSS is off in the “\(game.bottle.name)” bottle, so the game can't offer it. Turn on DLSS in the bottle's settings in CrossOver, then restart the game.",
-                          systemImage: "exclamationmark.triangle.fill")
-                        .font(.callout)
-                        .foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                controls(nss: nss, ready: ready)
+    static let scalers: [(tag: String, name: String)] = [("ls1", "LS1"), ("fsr", "FSR"), ("bcas", "BCAS"),
+                                                          ("bicubic", "Bicubic"), ("nearest", "Nearest")]
+
+    /// The one choice, stored as the hook's two settings (upscaler for DLSS, scaler for window scaling).
+    private var method: Binding<String> {
+        Binding(get: {
+            let p = model.profile(for: game)
+            if p.scaler != "off" { return p.scaler }
+            return p.upscaler == "nss" ? "nss" : "metalfx"
+        }, set: { value in
+            var p = model.profile(for: game)
+            switch value {
+            case "metalfx", "nss": p.upscaler = value; p.scaler = "off"
+            default: p.upscaler = "metalfx"; p.scaler = value
             }
-        }
+            model.setProfile(p, for: game)
+        })
     }
 
-    @ViewBuilder private func controls(nss: Bool, ready: Bool) -> some View {
-            SettingRow(title: "Upscaler", caption: caption(nss: nss, ready: ready), warn: nss && !ready) {
-                Picker("Upscaler", selection: profile.upscaler) {
-                    Text("MetalFX").tag("metalfx")
-                    Text("NSS").tag("nss")
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
+    var body: some View {
+        let dlss = game.upscalers.contains(.dlss)
+        let m = method.wrappedValue
+        let ready = NSSFiles.isReady
+        Card(title: "Upscaling") {
+            if dlss && !game.bottle.dlssEnabled && (m == "metalfx" || m == "nss") {
+                Label("DLSS is off in the “\(game.bottle.name)” bottle, so the game can't offer it. Turn on DLSS in the bottle's settings in CrossOver, then restart the game.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            if nss {
+            SettingRow(title: "Upscaler", caption: caption(m, dlss: dlss, ready: ready), warn: m == "nss" && !ready) {
+                Picker("Upscaler", selection: method) {
+                    Section("Game's DLSS") {
+                        Text(dlss ? "MetalFX" : "Off").tag("metalfx")
+                        if dlss { Text("NSS").tag("nss") }
+                    }
+                    Section("Scale to window") {
+                        ForEach(Self.scalers, id: \.tag) { Text($0.name).tag($0.tag) }
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 160)
+            }
+            if !dlss && (m == "metalfx" || m == "nss") { NoDLSSNote(game: game) }
+            if m == "nss" {
                 SettingRow(title: "NSS quality", caption: "Mid is the best trade. High costs about 3× as much.") {
                     Picker("NSS quality", selection: profile.nssQuality) {
                         Text("Low").tag("low")
@@ -158,12 +175,30 @@ private struct UpscalerCard: View {
                 }
                 NSSTermsNote()
             }
+            if ["ls1", "fsr", "bcas"].contains(m) {
+                SliderRow(title: "Sharpness", value: profile.scalerSharpness, range: 0...1, step: 0.25) { "\(Int(($0 * 100).rounded()))%" }
+            }
+            if m == "ls1" {
+                SettingRow(title: "Performance", caption: "LS1's single-pass variant: about half the GPU time, a little less detail.") {
+                    Toggle("Performance", isOn: profile.scalerPerformance).labelsHidden()
+                }
+            }
+        }
     }
 
-    private func caption(nss: Bool, ready: Bool) -> String {
-        if !nss { return "Pick DLSS in the game. D3DMetal upscales it with MetalFX." }
-        if !ready { return "NSS files aren't installed yet: uninstall and install the game again." }
-        return "Pick DLSS in the game; NSS replaces MetalFX: a sharper, more stable image at about the same GPU cost (Mid)."
+    private func caption(_ m: String, dlss: Bool, ready: Bool) -> String {
+        switch m {
+        case "metalfx":
+            return dlss ? "Pick DLSS in the game. D3DMetal upscales it with MetalFX." : "The game renders at the resolution you set in it."
+        case "nss":
+            if !ready { return "NSS files aren't installed yet: uninstall and install the game again." }
+            return "Pick DLSS in the game; NSS replaces MetalFX: a sharper, more stable image at about the same GPU cost (Mid)."
+        default:
+            let what = ["ls1": "Lossless Scaling's own trained upscaler", "fsr": "AMD FSR 1",
+                        "bcas": "bicubic with AMD's contrast-adaptive sharpening", "bicubic": "plain bicubic",
+                        "nearest": "nearest neighbour (sharp pixels; integer scaling at whole ratios)"][m] ?? m
+            return "Set the game to a lower resolution: its frames are scaled up to the window with \(what). Works in any game; uses your Lossless Scaling."
+        }
     }
 }
 
@@ -274,50 +309,6 @@ private struct SliderRow: View {
 
 /// One settings line: title (and optional caption) on the left, the control in a fixed right column,
 /// so every control in the card lines up.
-/// Lossless Scaling's spatial upscalers: the game renders at a lower resolution and the hook scales its frames up to
-/// the window. Works in any game (no DLSS needed).
-private struct ScalingCard: View {
-    let game: Game
-    let model: AppModel
-
-    private var profile: Binding<GameProfile> {
-        Binding(get: { model.profile(for: game) }, set: { model.setProfile($0, for: game) })
-    }
-
-    var body: some View {
-        let mode = profile.wrappedValue.scaler
-        Card(title: "Scaling") {
-            SettingRow(title: "Upscaler", caption: caption(mode)) {
-                Picker("Upscaler", selection: profile.scaler) {
-                    Text("Off").tag("off")
-                    Text("LS1").tag("ls1")
-                    Text("FSR").tag("fsr")
-                    Text("BCAS").tag("bcas")
-                    Text("Bicubic").tag("bicubic")
-                    Text("Nearest").tag("nearest")
-                }
-                .labelsHidden()
-                .frame(width: 140)
-            }
-            if ["ls1", "fsr", "bcas"].contains(mode) {
-                SliderRow(title: "Sharpness", value: profile.scalerSharpness, range: 0...1, step: 0.25) { "\(Int(($0 * 100).rounded()))%" }
-            }
-            if mode == "ls1" {
-                SettingRow(title: "Performance", caption: "LS1's single-pass variant: about half the GPU time, a little less detail.") {
-                    Toggle("Performance", isOn: profile.scalerPerformance).labelsHidden()
-                }
-            }
-        }
-    }
-
-    private func caption(_ mode: String) -> String {
-        if mode == "off" { return "Set the game to a lower resolution and pick an upscaler: its frames are scaled up to the window, in any game." }
-        let what = ["ls1": "Lossless Scaling's own trained upscaler", "fsr": "AMD FSR 1", "bcas": "bicubic with AMD's contrast-adaptive sharpening",
-                    "bicubic": "plain bicubic", "nearest": "nearest neighbour (sharp pixels; integer scaling at whole ratios)"][mode] ?? mode
-        return "Set the game to a lower resolution: its frames are scaled up to the window with \(what). Uses your Lossless Scaling."
-    }
-}
-
 /// What the game can use, at a glance: the frame-generation hook, and the upscalers it ships.
 private struct SupportRow: View {
     let game: Game
@@ -344,9 +335,9 @@ private struct NoDLSSNote: View {
     var body: some View {
         let others = UpscalerTech.allCases.filter { $0 != .dlss && game.upscalers.contains($0) }.map(\.label)
         VStack(alignment: .leading, spacing: 6) {
-            Label("This game doesn't use DLSS, so there's no upscaling for NSS or MetalFX to take over.", systemImage: "info.circle")
+            Label("This game doesn't use DLSS, so NSS and MetalFX have nothing to take over.", systemImage: "info.circle")
             if others.isEmpty {
-                Text("Upscaling works in games that offer DLSS in their graphics settings. Frame generation doesn't need it.")
+                Text("NSS and MetalFX need a game with DLSS. Pick one of the “Scale to window” upscalers instead: they work in any game.")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
                 Text("It ships \(others.joined(separator: " and ")). A mod such as OptiScaler can route the game's \(others.joined(separator: " or ")) through DLSS, which would make NSS possible here; that route isn't supported yet.")
