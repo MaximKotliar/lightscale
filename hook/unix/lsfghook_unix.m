@@ -1191,7 +1191,7 @@ static void startStatsTimer(void) {
     dispatch_resume(timer);
 }
 
-#include "lsfg_nss.m"
+#include "lsfg_nss_hook.m"
 
 __attribute__((constructor)) static void lsfg_unix_init(void) {
     @autoreleasepool {
