@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import LSFGCore
 
@@ -9,10 +10,15 @@ struct CrossOverInstall: Sendable, Hashable {
     var root: URL { app.appending(path: "Contents/SharedSupport/CrossOver") }
     var wine: URL { root.appending(path: "bin/wine") }
 
+    /// CrossOver wherever it is: the usual places, then wherever Launch Services knows it (renamed or moved copies).
+    static var candidateApps: [URL] {
+        var apps = LosslessLocator.defaultCrossOverApps
+        if let known = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.codeweavers.CrossOver") { apps.append(known) }
+        return apps
+    }
+
     static func find() -> CrossOverInstall? {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let candidates = [home.appending(path: "Applications/CrossOver.app"), URL(fileURLWithPath: "/Applications/CrossOver.app")]
-        for app in candidates where FileManager.default.fileExists(atPath: app.appending(path: "Contents/SharedSupport/CrossOver/bin/wine").path) {
+        for app in candidateApps where FileManager.default.fileExists(atPath: app.appending(path: "Contents/SharedSupport/CrossOver/bin/wine").path) {
             let version = Bundle(url: app)?.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
             return CrossOverInstall(app: app, version: version)
         }
@@ -38,7 +44,8 @@ struct Bottle: Identifiable, Hashable, Sendable {
     static func all() -> [Bottle] {
         let fm = FileManager.default
         var seen = Set<String>()
-        return LosslessLocator.bottleRoots().flatMap { root in
+        // CrossOver's own bottle folders (default, its BottlePath setting, CX_BOTTLE_PATH as CXPatcher sets it)
+        return LosslessLocator.bottleRoots(crossOverApps: CrossOverInstall.candidateApps).flatMap { root in
             ((try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? [])
                 .filter { fm.fileExists(atPath: $0.appending(path: "cxbottle.conf").path) }
                 .map { Bottle(url: $0.resolvingSymlinksInPath()) }

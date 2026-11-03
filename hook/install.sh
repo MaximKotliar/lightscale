@@ -1,7 +1,8 @@
 #!/bin/bash
 # Install or remove the hook for one game in one CrossOver bottle.
 #
-#   hook/install.sh --bottle ~/CXPBottles/Steam --game-dir "/…/The Witcher 3/bin/x64_dx12" \
+#   B=~/"Library/Application Support/CrossOver/Bottles/Steam"   # CrossOver's default (CXPatcher: ~/CXPBottles/Steam)
+#   hook/install.sh --bottle "$B" --game-dir "$B/drive_c/…/The Witcher 3/bin/x64_dx12" \
 #                   --exe witcher3.exe --proxy dinput8
 #   hook/install.sh --uninstall (same arguments)
 #
@@ -16,8 +17,14 @@
 # Nothing inside CrossOver.app is modified.
 set -euo pipefail
 
-CX=${CX:-$HOME/Applications/CrossOver.app/Contents/SharedSupport/CrossOver}
-[ -d "$CX" ] || CX=/Applications/CrossOver.app/Contents/SharedSupport/CrossOver
+# CrossOver: $CX, ~/Applications, /Applications, or wherever Spotlight finds it (renamed or moved copies)
+if [ -z "${CX:-}" ]; then
+    for app in "$HOME/Applications/CrossOver.app" /Applications/CrossOver.app \
+               $(mdfind "kMDItemCFBundleIdentifier == 'com.codeweavers.CrossOver'" 2>/dev/null | tr '\n' ' '); do
+        [ -x "$app/Contents/SharedSupport/CrossOver/bin/wine" ] && CX="$app/Contents/SharedSupport/CrossOver" && break
+    done
+fi
+[ -n "${CX:-}" ] && [ -x "$CX/bin/wine" ] || { echo "CrossOver not found (set CX=/path/CrossOver.app/Contents/SharedSupport/CrossOver)" >&2; exit 1; }
 BUILD=$(cd "$(dirname "$0")" && pwd)/build
 ROOT="$HOME/Library/Application Support/Lightscale"
 # before the rename the folder was lsfg-metal: move it once and leave a link (older bottles' LibPath names it)

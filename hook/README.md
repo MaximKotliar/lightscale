@@ -36,10 +36,15 @@ Requirements: Lossless Scaling owned and installed through Steam in a CrossOver 
 
 ```bash
 hook/build.sh
-hook/install.sh --bottle ~/CXPBottles/Steam \
-    --game-dir ~/"CXPBottles/Steam/drive_c/Program Files (x86)/Steam/steamapps/common/The Witcher 3/bin/x64_dx12" \
+B=~/"Library/Application Support/CrossOver/Bottles/Steam"   # with CXPatcher's CrossOver: B=~/CXPBottles/Steam
+hook/install.sh --bottle "$B" \
+    --game-dir "$B/drive_c/Program Files (x86)/Steam/steamapps/common/The Witcher 3/bin/x64_dx12" \
     --exe witcher3.exe --proxy dinput8
 ```
+
+Bottles can live anywhere: CrossOver keeps them in `~/Library/Application Support/CrossOver/Bottles` unless its
+settings (`BottlePath`) or `CX_BOTTLE_PATH` say otherwise, which is how CXPatcher builds use `~/CXPBottles`. The app
+looks in all of these.
 
 Pick the proxy from the game exe's imports (`llvm-objdump -p game.exe | grep 'DLL Name'`): `dinput8` or `version`. The installer refuses to overwrite a proxy DLL that isn't ours (another mod).
 
@@ -92,7 +97,8 @@ The hook reads them when the game starts, matching on the exe name. These enviro
 
 `unix/lsfg_nss_hook.m` catches `-[<MetalFX temporal scaler> encodeToCommandBuffer:]` (D3DMetal turns a game's DLSS
 calls into MetalFX temporal upscaling). When the game's profile says `"upscaler": "nss"`, it hands the same inputs to
-an `NSSUpscaler` from [nss-metal](../vendor/nss-metal) (compiled into `lsfghook.so`) and encodes that instead;
+an `NSSUpscaler` from [nss-metal](../vendor/nss-metal) (compiled into `lsfghook.so`), a Metal port of Arm's
+[Neural Super Sampling](https://huggingface.co/Arm/neural-super-sampling) and encodes that instead;
 otherwise MetalFX runs as usual. Either way it times the call for the log's `upscale GPU` figure. Kernels and Arm's weights
 (shipped with nss-metal, under the Arm AI Model Community License; the app shows its acceptable-use terms) are
 installed to `~/Library/Application Support/Lightscale/nss/` (`LSFG_NSS_DIR` overrides it). `test/nss_perf.sh` drives a

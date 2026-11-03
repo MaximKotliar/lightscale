@@ -47,7 +47,7 @@ enum DependencyChecker {
                             state: status.crossOver == nil ? .missing : .ok,
                             fix: status.crossOver == nil ? .open(URL(string: "https://www.codeweavers.com/crossover")!) : nil))
 
-        status.lossless = LosslessLocator.findAll().first
+        status.lossless = LosslessLocator.findAll(roots: LosslessLocator.bottleRoots(crossOverApps: CrossOverInstall.candidateApps)).first
         checks.append(Check(id: "lossless", title: "Lossless Scaling",
                             detail: status.lossless.map { "Steam build \($0.buildID ?? "?") in bottle \($0.bottle.lastPathComponent)" }
                                 ?? "Install it with Steam inside a CrossOver bottle",

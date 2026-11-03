@@ -6,8 +6,11 @@ A Mac app that makes Windows games running under CrossOver smoother and sharper 
 
 - **Frame generation:** Lossless Scaling's LSFG 3.1, running natively on Metal, inserts generated frames (2×–4×).
   Needs your own copy of [Lossless Scaling on Steam](https://store.steampowered.com/app/993090/).
-- **Neural upscaling:** in games that use DLSS (which Apple's Game Porting Toolkit turns into MetalFX), Arm's Neural
-  Super Sampling can replace MetalFX: a sharper, more stable image at about the same GPU cost.
+- **Neural upscaling:** in games that use DLSS (which Apple's Game Porting Toolkit turns into MetalFX), Arm's
+  [Neural Super Sampling](https://huggingface.co/Arm/neural-super-sampling) can replace MetalFX: a sharper, more stable
+  image at about the same GPU cost. ([Paper](https://huggingface.co/Arm/neural-super-sampling/blob/main/2025-neural-super-sampling.pdf),
+  [Arm's NSS guide](https://developer.arm.com/documentation/111009/latest/); the Metal port is
+  [nss-metal](https://github.com/MaximKotliar/nss-metal).)
 
 ## What it does
 
