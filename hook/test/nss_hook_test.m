@@ -2,6 +2,9 @@
 // Load the hook with DYLD_INSERT_LIBRARIES=$PWD/build/lsfghook.so and LSFG_UPSCALER=nss; compare against a run
 // without it. Renders a moving pattern with Halton jitter and writes the last output to a PNG.
 //   nss_hook_test <out.png> [frames]      TEST_MTL4=1: a Metal 4 scaler and command buffers, like GPTK 4
+//   TEST_GAMELIKE=1: what TLOU2 hands MetalFX under GPTK 4 (scaler made at output size with input content properties,
+//   RG11B10 color and output, Depth32Float_Stencil8 forward depth, 1x1 exposure texture, UV-unit motion scaled by
+//   the render size)
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #import <MetalFX/MetalFX.h>
@@ -12,7 +15,7 @@
 static const char *kSrc =
     "#include <metal_stdlib>\n"
     "using namespace metal;\n"
-    "struct A { float2 jitter; float t; float2 outScale; };\n"
+    "struct A { float2 jitter; float t; float2 outScale; float2 mvDiv; float depthFwd; };\n"
     "static float3 scene(float2 p, float t) {\n"
     "  float2 q = p + float2(3.0 * t, 0);\n"
     "  float v = (fract(q.x / 23.0) < 0.15 || fract(q.y / 17.0) < 0.15) ? 1.0 : 0.15;\n"
@@ -28,9 +31,9 @@ static const char *kSrc =
     "  col.write(float4(scene(p, a.t), 1), g);\n"
     "  float2 c = p - float2(400 + 200 * sin(a.t * 0.05), 300);\n"
     "  bool disc = length(c) < 120;\n"
-    "  dep.write(float4(disc ? 0.6 : 0.2), g);\n"
+    "  float d = disc ? 0.6 : 0.2; dep.write(float4(a.depthFwd > 0 ? 1.0 - d : d), g);\n"
     "  float2 prevMinusCur = disc ? float2(200 * (sin((a.t - 1) * 0.05) - sin(a.t * 0.05)), 0) : float2(-3, 0);\n"
-    "  mv.write(float4(prevMinusCur / a.outScale, 0, 0), g);\n"
+    "  mv.write(float4(prevMinusCur / a.outScale / a.mvDiv, 0, 0), g);\n"
     "}\n";
 
 static float halton(int i, int b) { float f = 1, r = 0; for (; i > 0; i /= b) f /= b, r += f * (i % b); return r; }
@@ -47,10 +50,14 @@ int main(int argc, char **argv) {
         id<MTLLibrary> lib = [dev newLibraryWithSource:@(kSrc) options:nil error:&e];
         if (!lib) { NSLog(@"%@", e); return 1; }
         id<MTLComputePipelineState> render = [dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"render"] error:&e];
+        const BOOL gameLike = getenv("TEST_GAMELIKE") && getenv("TEST_GAMELIKE")[0] == '1';
+        const MTLPixelFormat colorFmt = gameLike ? MTLPixelFormatRG11B10Float : MTLPixelFormatRGBA16Float;
+        const MTLPixelFormat depthFmt = gameLike ? MTLPixelFormatDepth32Float_Stencil8 : MTLPixelFormatDepth32Float;
         MTLFXTemporalScalerDescriptor *d = [MTLFXTemporalScalerDescriptor new];
-        d.colorTextureFormat = MTLPixelFormatRGBA16Float, d.depthTextureFormat = MTLPixelFormatDepth32Float;
-        d.motionTextureFormat = MTLPixelFormatRG16Float, d.outputTextureFormat = MTLPixelFormatRGBA16Float;
-        d.inputWidth = Wr, d.inputHeight = Hr, d.outputWidth = Wo, d.outputHeight = Ho;
+        d.colorTextureFormat = colorFmt, d.depthTextureFormat = depthFmt;
+        d.motionTextureFormat = MTLPixelFormatRG16Float, d.outputTextureFormat = colorFmt;
+        d.inputWidth = gameLike ? Wo : Wr, d.inputHeight = gameLike ? Ho : Hr, d.outputWidth = Wo, d.outputHeight = Ho;
+        if (gameLike) d.inputContentPropertiesEnabled = YES, d.inputContentMinScale = 1.0f, d.inputContentMaxScale = 3.0f;
         const BOOL mtl4 = getenv("TEST_MTL4") && getenv("TEST_MTL4")[0] == '1';
         id<MTLFXTemporalScaler> fx = nil;
         id<MTL4FXTemporalScaler> fx4 = nil;
@@ -68,32 +75,43 @@ int main(int argc, char **argv) {
         }
         if (!fx && !fx4) { NSLog(@"no MetalFX"); return 1; }
         id<MTLFXTemporalScalerBase> fxb = mtl4 ? (id<MTLFXTemporalScalerBase>)fx4 : (id<MTLFXTemporalScalerBase>)fx;
-        MTLTextureDescriptor *t = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float width:Wr height:Hr mipmapped:NO];
+        MTLTextureDescriptor *t = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:colorFmt width:Wr height:Hr mipmapped:NO];
         t.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
         t.storageMode = MTLStorageModePrivate;
         id<MTLTexture> color = [dev newTextureWithDescriptor:t];
         t.pixelFormat = MTLPixelFormatR32Float;
         id<MTLTexture> depthW = [dev newTextureWithDescriptor:t];
-        t.pixelFormat = MTLPixelFormatDepth32Float, t.usage = fxb.depthTextureUsage | MTLTextureUsageShaderRead;
+        t.pixelFormat = depthFmt, t.usage = fxb.depthTextureUsage | MTLTextureUsageShaderRead;
         id<MTLTexture> depth = [dev newTextureWithDescriptor:t];
         t.pixelFormat = MTLPixelFormatRG16Float, t.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
         id<MTLTexture> motion = [dev newTextureWithDescriptor:t];
-        MTLTextureDescriptor *o = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float width:Wo height:Ho mipmapped:NO];
+        MTLTextureDescriptor *o = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:colorFmt width:Wo height:Ho mipmapped:NO];
         o.usage = fxb.outputTextureUsage | MTLTextureUsageShaderRead;
         o.storageMode = MTLStorageModeShared;
         id<MTLTexture> out = [dev newTextureWithDescriptor:o];
         id<MTLBuffer> depthBuf = [dev newBufferWithLength:(size_t)Wr * Hr * 4 options:MTLResourceStorageModePrivate];
+        id<MTLTexture> exposureTex = nil;   // game-like: a 1x1 exposure texture holding 1.0
+        if (gameLike) {
+            MTLTextureDescriptor *ed = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR32Float width:1 height:1 mipmapped:NO];
+            ed.usage = MTLTextureUsageShaderRead;
+            exposureTex = [dev newTextureWithDescriptor:ed];
+            const float one = 1.0f;
+            [exposureTex replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 withBytes:&one bytesPerRow:4];
+        }
         if (mtl4) {   // Metal 4: the queue's residency set holds the textures MetalFX touches
             MTLResidencySetDescriptor *rd = [MTLResidencySetDescriptor new];
             id<MTLResidencySet> rs = [dev newResidencySetWithDescriptor:rd error:&e];
             for (id<MTLAllocation> a in @[color, depth, motion, out]) [rs addAllocation:a];
+            if (exposureTex) [rs addAllocation:exposureTex];
             [rs commit];
             [q4 addResidencySet:rs];
         }
         printf("output usage 0x%lx\n", (unsigned long)out.usage);
         for (int f = 0; f < frames; f++) {
             const float jx = halton(f % 16 + 1, 2) - 0.5f, jy = halton(f % 16 + 1, 3) - 0.5f;
-            struct { float jitter[2]; float t; float pad; float outScale[2]; } a = {{jx, jy}, (float)f, 0, {(float)Wo / Wr, (float)Ho / Hr}};   // float2 is 8-aligned in Metal
+            // float2 is 8-aligned in Metal: pad after t; mvDiv makes motion UV units in game-like mode
+            struct { float jitter[2]; float t; float pad; float outScale[2]; float mvDiv[2]; float depthFwd; } a =
+                {{jx, jy}, (float)f, 0, {(float)Wo / Wr, (float)Ho / Hr}, {gameLike ? (float)Wr : 1.0f, gameLike ? (float)Hr : 1.0f}, gameLike ? 1.0f : 0.0f};
             id<MTLCommandBuffer> cb = [q commandBuffer];
             id<MTLComputeCommandEncoder> c = [cb computeCommandEncoder];
             [c setComputePipelineState:render];
@@ -105,11 +123,14 @@ int main(int argc, char **argv) {
             [b copyFromTexture:depthW sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(Wr, Hr, 1)
                       toBuffer:depthBuf destinationOffset:0 destinationBytesPerRow:Wr * 4 destinationBytesPerImage:(NSUInteger)Wr * Hr * 4];
             [b copyFromBuffer:depthBuf sourceOffset:0 sourceBytesPerRow:Wr * 4 sourceBytesPerImage:(NSUInteger)Wr * Hr * 4
-                   sourceSize:MTLSizeMake(Wr, Hr, 1) toTexture:depth destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
+                   sourceSize:MTLSizeMake(Wr, Hr, 1) toTexture:depth destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)
+                      options:gameLike ? MTLBlitOptionDepthFromDepthStencil : MTLBlitOptionNone];
             [b endEncoding];
             fxb.colorTexture = color, fxb.depthTexture = depth, fxb.motionTexture = motion, fxb.outputTexture = out;
-            fxb.jitterOffsetX = -jx, fxb.jitterOffsetY = -jy, fxb.motionVectorScaleX = 1, fxb.motionVectorScaleY = 1;
-            fxb.depthReversed = YES, fxb.reset = f == 0;
+            fxb.jitterOffsetX = -jx, fxb.jitterOffsetY = -jy;
+            fxb.motionVectorScaleX = gameLike ? Wr : 1, fxb.motionVectorScaleY = gameLike ? Hr : 1;
+            fxb.depthReversed = !gameLike, fxb.reset = f == 0;
+            if (gameLike) fxb.inputContentWidth = Wr, fxb.inputContentHeight = Hr, fxb.exposureTexture = exposureTex;
             if (!mtl4) {
                 [fx encodeToCommandBuffer:cb];
                 [cb commit];
@@ -128,6 +149,23 @@ int main(int argc, char **argv) {
                 [q4 signalEvent:ev value:f + 1];
                 if (![ev waitUntilSignaledValue:f + 1 timeoutMS:5000]) { NSLog(@"frame %d: Metal 4 timeout", f); return 1; }
             }
+        }
+        if (gameLike) {   // output is RG11B10: convert to RGBA16F for the PNG
+            MTLTextureDescriptor *cd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float width:Wo height:Ho mipmapped:NO];
+            cd.usage = MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead;
+            cd.storageMode = MTLStorageModeShared;
+            id<MTLTexture> conv = [dev newTextureWithDescriptor:cd];
+            id<MTLLibrary> cl = [dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nkernel void cv(texture2d<float> s [[texture(0)]], texture2d<float, access::write> d [[texture(1)]], uint2 g [[thread_position_in_grid]]) { if (g.x < d.get_width() && g.y < d.get_height()) d.write(float4(s.read(g).rgb, 1), g); }" options:nil error:&e];
+            id<MTLComputePipelineState> cp = [dev newComputePipelineStateWithFunction:[cl newFunctionWithName:@"cv"] error:&e];
+            id<MTLCommandBuffer> cb = [q commandBuffer];
+            id<MTLComputeCommandEncoder> c = [cb computeCommandEncoder];
+            [c setComputePipelineState:cp];
+            [c setTexture:out atIndex:0], [c setTexture:conv atIndex:1];
+            [c dispatchThreads:MTLSizeMake(Wo, Ho, 1) threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
+            [c endEncoding];
+            [cb commit];
+            [cb waitUntilCompleted];
+            out = conv;
         }
         // PNG of the last output
         uint16_t *px = malloc((size_t)Wo * Ho * 8);
