@@ -8,6 +8,33 @@ enum ProxyDLL: String, CaseIterable, Sendable {
     var fileName: String { "\(rawValue).dll" }
 }
 
+/// Upscalers a game ships, recognized by their libraries in the game's folder.
+enum UpscalerTech: String, CaseIterable, Hashable, Sendable {
+    /// NVIDIA DLSS (NGX, or through Streamline). D3DMetal turns it into MetalFX, which the hook can replace with NSS.
+    case dlss
+    /// AMD FSR 2 / 3.1 / 4 as a separate library (the FidelityFX SDK). Built-in FSR leaves no file to find.
+    case fsr
+    /// Intel XeSS.
+    case xess
+
+    var label: String {
+        switch self {
+        case .dlss: "DLSS"
+        case .fsr: "FSR"
+        case .xess: "XeSS"
+        }
+    }
+
+    static func matching(fileName: String) -> UpscalerTech? {
+        let n = fileName.lowercased()
+        guard n.hasSuffix(".dll") else { return nil }
+        if n.hasPrefix("nvngx_dlss") || n == "sl.dlss.dll" { return .dlss }
+        if n.hasPrefix("amd_fidelityfx_") || n.hasPrefix("ffx_fsr") { return .fsr }
+        if n.hasPrefix("libxess") { return .xess }
+        return nil
+    }
+}
+
 /// A Windows game inside a CrossOver bottle, and whether the hook can go into it.
 struct Game: Identifiable, Hashable, Sendable {
     enum Status: Hashable, Sendable {
@@ -22,6 +49,8 @@ struct Game: Identifiable, Hashable, Sendable {
     var status: Status
     /// Added by hand with Add Game (not found by the Steam scan).
     var isCustom = false
+    /// Upscalers found in the game's folder.
+    var upscalers: Set<UpscalerTech> = []
 
     var id: URL { exe }
     var folder: URL { exe.deletingLastPathComponent() }
@@ -64,11 +93,15 @@ enum GameScanner {
                                          options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return nil }
         var best: (url: URL, score: Int)?
         var antiCheatFound: String?
+        var upscalers: Set<UpscalerTech> = []
         func squashed(_ s: String) -> String { s.lowercased().filter { $0.isLetter || $0.isNumber } }
         let folderKey = squashed(folder.lastPathComponent)
         for case let url as URL in walker {
-            if walker.level > 4 { walker.skipDescendants(); continue }
+            // upscaler libraries can sit deep (Unreal: Plugins/…/Binaries/ThirdParty/Win64); the exe and anti-cheat don't
+            if walker.level > 9 { walker.skipDescendants(); continue }
             let name = url.lastPathComponent
+            if let tech = UpscalerTech.matching(fileName: name) { upscalers.insert(tech) }
+            guard walker.level <= 4 else { continue }   // as before for the exe and anti-cheat
             if antiCheatFound == nil, name.contains(antiCheat) { antiCheatFound = name }
             guard url.pathExtension.lowercased() == "exe", !name.contains(notGameExe) else { continue }
             let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isSymbolicLinkKey])
@@ -80,13 +113,25 @@ enum GameScanner {
         }
         guard let exe = best?.url else { return nil }
         return Game(name: folder.lastPathComponent, bottle: bottle, exe: exe,
-                    status: status(exe: exe, antiCheat: antiCheatFound))
+                    status: status(exe: exe, antiCheat: antiCheatFound), upscalers: upscalers)
+    }
+
+    /// Upscaler libraries under `folder` (for games added by hand, whose root folder isn't known: the exe's folder).
+    static func upscalers(in folder: URL) -> Set<UpscalerTech> {
+        guard let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil,
+                                                          options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return [] }
+        var found: Set<UpscalerTech> = []
+        for case let url as URL in walker {
+            if walker.level > 8 { walker.skipDescendants(); continue }
+            if let tech = UpscalerTech.matching(fileName: url.lastPathComponent) { found.insert(tech) }
+        }
+        return found
     }
 
     /// A game the user picked by hand (any .exe inside a bottle).
     static func game(exe: URL, bottle: Bottle) -> Game {
         Game(name: exe.deletingPathExtension().lastPathComponent, bottle: bottle, exe: exe,
-             status: status(exe: exe, antiCheat: nil))
+             status: status(exe: exe, antiCheat: nil), upscalers: upscalers(in: exe.deletingLastPathComponent()))
     }
 
     static func status(exe: URL, antiCheat: String?) -> Game.Status {

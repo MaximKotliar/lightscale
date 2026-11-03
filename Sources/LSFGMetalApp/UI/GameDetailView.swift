@@ -10,6 +10,7 @@ struct GameDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 Header(game: game, model: model)
+                SupportRow(game: game)
                 if case let .blocked(reason) = game.status {
                     Label(blockedExplanation(reason), systemImage: "info.circle")
                         .foregroundStyle(.secondary)
@@ -120,6 +121,22 @@ private struct UpscalerCard: View {
         let nss = profile.wrappedValue.upscaler == "nss"
         let ready = NSSFiles.isReady
         Card(title: "Upscaling") {
+            if !game.upscalers.contains(.dlss) {
+                NoDLSSNote(game: game)
+            } else {
+                if !game.bottle.dlssEnabled {
+                    Label("DLSS is off in the “\(game.bottle.name)” bottle, so the game can't offer it. Turn on DLSS in the bottle's settings in CrossOver, then restart the game.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                controls(nss: nss, ready: ready)
+            }
+        }
+    }
+
+    @ViewBuilder private func controls(nss: Bool, ready: Bool) -> some View {
             SettingRow(title: "Upscaler", caption: caption(nss: nss, ready: ready), warn: nss && !ready) {
                 Picker("Upscaler", selection: profile.upscaler) {
                     Text("MetalFX").tag("metalfx")
@@ -140,7 +157,6 @@ private struct UpscalerCard: View {
                 }
                 NSSTermsNote()
             }
-        }
     }
 
     private func caption(nss: Bool, ready: Bool) -> String {
@@ -257,6 +273,45 @@ private struct SliderRow: View {
 
 /// One settings line: title (and optional caption) on the left, the control in a fixed right column,
 /// so every control in the card lines up.
+/// What the game can use, at a glance: the frame-generation hook, and the upscalers it ships.
+private struct SupportRow: View {
+    let game: Game
+
+    var body: some View {
+        HStack(spacing: 6) {
+            switch game.status {
+            case .blocked: StatusPill(text: "Frame generation: not supported", color: .orange)
+            default: StatusPill(text: "Frame generation", color: .green)
+            }
+            ForEach(UpscalerTech.allCases, id: \.self) { tech in
+                if game.upscalers.contains(tech) { StatusPill(text: tech.label, color: tech == .dlss ? .green : .secondary) }
+            }
+            if !game.upscalers.contains(.dlss) { StatusPill(text: "No DLSS", color: .secondary) }
+        }
+        .help("Found in the game's folder. NSS and MetalFX upscaling need the game's own DLSS.")
+    }
+}
+
+/// The game has no DLSS: say why upscaling isn't available, and what could make it work.
+private struct NoDLSSNote: View {
+    let game: Game
+
+    var body: some View {
+        let others = UpscalerTech.allCases.filter { $0 != .dlss && game.upscalers.contains($0) }.map(\.label)
+        VStack(alignment: .leading, spacing: 6) {
+            Label("This game doesn't use DLSS, so there's no upscaling for NSS or MetalFX to take over.", systemImage: "info.circle")
+            if others.isEmpty {
+                Text("Upscaling works in games that offer DLSS in their graphics settings. Frame generation doesn't need it.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("It ships \(others.joined(separator: " and ")). A mod such as OptiScaler can route the game's \(others.joined(separator: " or ")) through DLSS, which would make NSS possible here; that route isn't supported yet.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
 /// Arm's license for the NSS weights requires telling users that its acceptable-use terms apply.
 struct NSSTermsNote: View {
     var body: some View {

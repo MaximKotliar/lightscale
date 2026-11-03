@@ -41,6 +41,17 @@ struct Bottle: Identifiable, Hashable, Sendable {
     var conf: URL { url.appending(path: "cxbottle.conf") }
     var system32: URL { url.appending(path: "drive_c/windows/system32") }
 
+    /// Whether D3DMetal turns DLSS into MetalFX in this bottle (CrossOver's per-bottle DLSS setting, which sets
+    /// D3DM_ENABLE_METALFX). Without it a game's DLSS option is unavailable and there's nothing for NSS to replace.
+    var dlssEnabled: Bool {
+        guard let text = try? String(contentsOf: conf, encoding: .utf8) else { return false }
+        return text.split(whereSeparator: \.isNewline).contains { raw in
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard !line.hasPrefix(";"), line.contains("\"D3DM_ENABLE_METALFX\"") else { return false }
+            return line.split(separator: "=", maxSplits: 1).last?.trimmingCharacters(in: .whitespaces) == "\"1\""
+        }
+    }
+
     static func all() -> [Bottle] {
         let fm = FileManager.default
         var seen = Set<String>()

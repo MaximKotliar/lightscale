@@ -129,3 +129,34 @@ import Testing
     #expect(sample.shownFPS == 37)
     #expect(sample.generated == 27)
 }
+
+@Test func detectsUpscalerLibraries() throws {
+    #expect(UpscalerTech.matching(fileName: "nvngx_dlss.dll") == .dlss)
+    #expect(UpscalerTech.matching(fileName: "sl.dlss.dll") == .dlss)
+    #expect(UpscalerTech.matching(fileName: "amd_fidelityfx_dx12.dll") == .fsr)
+    #expect(UpscalerTech.matching(fileName: "ffx_fsr2_api_dx12_x64.dll") == .fsr)
+    #expect(UpscalerTech.matching(fileName: "libxess.dll") == .xess)
+    #expect(UpscalerTech.matching(fileName: "nvngx_dlss.txt") == nil)
+    #expect(UpscalerTech.matching(fileName: "sl.interposer.dll") == nil)
+    // deep, like an Unreal plugin
+    let fm = FileManager.default
+    let folder = fm.temporaryDirectory.appending(path: "lsfg-up-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: folder) }
+    let deep = folder.appending(path: "Game/Plugins/DLSS/Binaries/ThirdParty/Win64")
+    try fm.createDirectory(at: deep, withIntermediateDirectories: true)
+    try Data().write(to: deep.appending(path: "nvngx_dlss.dll"))
+    try Data().write(to: folder.appending(path: "amd_fidelityfx_dx12.dll"))
+    #expect(GameScanner.upscalers(in: folder) == [.dlss, .fsr])
+}
+
+@Test func readsBottleDLSSSetting() throws {
+    let fm = FileManager.default
+    let folder = fm.temporaryDirectory.appending(path: "lsfg-bottle-\(UUID().uuidString)")
+    try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer { try? fm.removeItem(at: folder) }
+    let bottle = Bottle(url: folder)
+    try Data("[EnvironmentVariables]\n;\"D3DM_ENABLE_METALFX\"=\"1\"\n".utf8).write(to: bottle.conf)
+    #expect(!bottle.dlssEnabled)
+    try Data("[EnvironmentVariables]\n\"D3DM_ENABLE_METALFX\" = \"1\"\n".utf8).write(to: bottle.conf)
+    #expect(bottle.dlssEnabled)
+}
