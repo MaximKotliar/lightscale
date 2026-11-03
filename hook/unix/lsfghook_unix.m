@@ -1142,7 +1142,7 @@ static void installLayerHook(void) {
 
 #pragma mark - Setup
 
-static NSString *nssStatsLine(void);   // lsfg_nss.m
+static NSString *nssStatsLine(void);   // lsfg_nss_hook.m
 
 static void startStatsTimer(void) {
     static dispatch_source_t timer;

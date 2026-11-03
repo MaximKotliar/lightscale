@@ -10,6 +10,10 @@
 # Env: TEST_SIZE (default 1488x928:2560x1600), FRAMES (default 900), PYTHON (with numpy + PIL for the comparison).
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# the test program: x86_64, like the game, so the hook (x86_64) loads into it
+[ -x build/nss_hook_test ] || clang -arch x86_64 -O2 -fobjc-arc -mmacosx-version-min=14.0 -Wno-unguarded-availability-new \
+    -framework Foundation -framework Metal -framework MetalFX -framework ImageIO -framework CoreGraphics \
+    -framework UniformTypeIdentifiers test/nss_hook_test.m -o build/nss_hook_test
 out=$1 mode=${2:-mid} ref=${3:-}
 mkdir -p "$out"
 size=${TEST_SIZE:-1488x928:2560x1600}

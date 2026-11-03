@@ -11,7 +11,7 @@ rm -rf "$ROOT/build/LSFG Metal.app"   # this build under its old name
 "$ROOT/hook/build.sh" >/dev/null
 # Pre-baked kernels (no weights inside) from this Mac's Lossless.dll, if there is one.
 rm -rf "$ROOT/hook/build/baked"
-if swift run --package-path "$ROOT" -c release -q lsfg-metal bake --out "$ROOT/hook/build/baked" >/dev/null 2>&1; then
+if swift run --package-path "$ROOT/vendor/lsfg-metal" -c release -q lsfg-metal bake --out "$ROOT/hook/build/baked" >/dev/null 2>&1; then
     echo "baked kernels included"
 else
     rm -rf "$ROOT/hook/build/baked"

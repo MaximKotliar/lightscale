@@ -1,0 +1,6 @@
+[submodule "vendor/lsfg-metal"]
+	path = vendor/lsfg-metal
+	url = https://github.com/MaximKotliar/lsfg-metal.git
+[submodule "vendor/nss-metal"]
+	path = vendor/nss-metal
+	url = https://github.com/MaximKotliar/nss-metal.git

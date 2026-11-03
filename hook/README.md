@@ -87,3 +87,12 @@ The hook reads them when the game starts, matching on the exe name. These enviro
 - `build/bridge_test`: runs the LSFG engine under Rosetta on synthetic RGB10A2 frames.
 - `build/fake_game`: imitates D3DMetal's present pattern in a window. Load the hook with `DYLD_INSERT_LIBRARIES=$PWD/build/lsfghook.so`. `FAKE_FPS`, `FAKE_JITTER=1` and `FAKE_GPU_MS` simulate real-game conditions. `FAKE_MTL4=1` presents through Metal 4 like GPTK 4 (`FAKE_MTL4_PASSES=2`: two submissions per frame, like TLOU Part II). `FAKE_FPS_PLAN=30:8,95:8,30:8` (with `FAKE_THREAD=1`) changes the frame rate over time. The window floats above others, since macOS throttles the display link for covered windows. `FAKE_THREAD=1` renders from a plain thread, like Wine's (`FAKE_THREAD=2`: without a per-frame autorelease pool), and `FAKE_SECONDS` sets how long it runs.
 - `build/present_order`: shows which presentation patterns Core Animation drops.
+
+## Upscaling: NSS in place of MetalFX
+
+`unix/lsfg_nss_hook.m` catches `-[<MetalFX temporal scaler> encodeToCommandBuffer:]` (D3DMetal turns a game's DLSS
+calls into MetalFX temporal upscaling). When the game's profile says `"upscaler": "nss"`, it hands the same inputs to
+an `NSSUpscaler` from [nss-metal](../vendor/nss-metal) (compiled into `lsfghook.so`) and encodes that instead;
+otherwise MetalFX runs as usual. Either way it times the call for the log's `upscale GPU` figure. Weights and kernels
+come from `~/Library/Application Support/Lightscale/nss/` (`LSFG_NSS_DIR` overrides it). `test/nss_perf.sh` drives a
+real Metal 4 MetalFX scaler with the hook loaded, without a game.
