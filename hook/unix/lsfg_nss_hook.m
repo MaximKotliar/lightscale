@@ -107,7 +107,7 @@ static BOOL nssTry(id<MTLFXTemporalScalerBase> s, id cbObj) {
         st->quality = quality;
         if (!up) { st->failed = YES; lsfg_log(@"nss: setup failed (%@); MetalFX runs instead", err.localizedDescription); return NO; }
         lsfg_log(@"nss: %s quality, %dx%d -> %dx%d, network input %lux%lu, set up in %.0f ms",
-                 quality == 0 ? "low" : quality == 1 ? "mid" : "high", wr, hr, wo, ho, (unsigned long)up.networkWidth,
+                 quality == 0 ? "low" : quality == 1 ? "mid" : quality == 3 ? "fast" : "high", wr, hr, wo, ho, (unsigned long)up.networkWidth,
                  (unsigned long)up.networkHeight, (CACurrentMediaTime() - t0) * 1e3);
     }
     // Same conventions as MetalFX; LSFG_NSS_JSIGN / _MVSIGN = -1 flip them, for games that differ.
@@ -197,7 +197,7 @@ static NSString *nssStatsLine(void) {
         if (!v.count) continue;
         [v sortUsingSelector:@selector(compare:)];
         const double med = v[v.count / 2].doubleValue, p95 = v[MIN(v.count - 1, (NSUInteger)(v.count * 0.95))].doubleValue;
-        const char *q = config.nssQuality == 0 ? "low" : config.nssQuality == 2 ? "high" : "mid";
+        const char *q = config.nssQuality == 0 ? "low" : config.nssQuality == 2 ? "high" : config.nssQuality == 3 ? "fast" : "mid";
         [out appendFormat:@" | upscale GPU %s%s%s %.2f ms (p95 %.2f, %lu frames)", k ? "NSS" : "MetalFX", k ? " " : "", k ? q : "",
                           med, p95, (unsigned long)v.count];
         [v removeAllObjects];

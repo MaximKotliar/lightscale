@@ -15,7 +15,7 @@ struct GameProfile: Codable, Equatable, Sendable {
     /// Upscaling when the game uses DLSS (D3DMetal turns it into MetalFX): "metalfx" leaves it to
     /// MetalFX, "nss" runs Arm Neural Super Sampling in its place.
     var upscaler = "metalfx"
-    /// NSS quality: "low", "mid" or "high".
+    /// NSS quality: "fast", "mid" or "high" ("low" still works; the app no longer offers it).
     var nssQuality = "mid"
     /// Lossless Scaling's spatial upscalers (lss-metal), for any game: the hook shows the game's frames scaled to the
     /// window. "off", "ls1", "fsr", "bcas", "bicubic" or "nearest".

@@ -266,7 +266,7 @@ static void trackPresented(id<CAMetalDrawable> d) {
 }
 
 // The effective settings for this game: defaults, then profiles.json, then environment.
-// upscaler: 0 MetalFX (as the game asked), 1 NSS in its place. nssQuality: 0 low, 1 mid, 2 high.
+// upscaler: 0 MetalFX (as the game asked), 1 NSS in its place. nssQuality: 0 low, 1 mid, 2 high, 3 fast (NSSQuality's values).
 // scaler (Lossless Scaling's spatial upscalers, lss-metal): 0 off, 1 LS1, 2 FSR, 3 BCAS, 4 bicubic, 5 nearest;
 // the overlay then shows the game's frames scaled to the window. scalerSharpness 0-1, scalerPerformance: LS1's
 // single-pass variant.
@@ -288,7 +288,7 @@ static void applyProfile(NSDictionary *p) {
     if ([p[@"upscaler"] isKindOfClass:NSString.class]) config.upscaler = [p[@"upscaler"] isEqualToString:@"nss"] ? 1 : 0;
     if ([p[@"nssQuality"] isKindOfClass:NSString.class]) {
         NSString *q = p[@"nssQuality"];
-        config.nssQuality = [q isEqualToString:@"low"] ? 0 : [q isEqualToString:@"high"] ? 2 : 1;
+        config.nssQuality = [q isEqualToString:@"low"] ? 0 : [q isEqualToString:@"high"] ? 2 : [q isEqualToString:@"fast"] ? 3 : 1;
     }
     if ([p[@"scaler"] isKindOfClass:NSString.class]) config.scaler = scalerMode(p[@"scaler"]);
     if ([p[@"scalerSharpness"] isKindOfClass:NSNumber.class]) config.scalerSharpness = [p[@"scalerSharpness"] floatValue];
@@ -344,7 +344,7 @@ static void loadConfig(void) {
     if ((v = getenv("LSFG_BUFFER_MS"))) config.bufferMs = (float)atof(v);
     if ((v = getenv("LSFG_MULTIPLIER"))) config.multiplier = atoi(v);
     if ((v = getenv("LSFG_UPSCALER"))) config.upscaler = strcmp(v, "nss") == 0 ? 1 : 0;
-    if ((v = getenv("LSFG_NSS_QUALITY"))) config.nssQuality = strcmp(v, "low") == 0 ? 0 : strcmp(v, "high") == 0 ? 2 : 1;
+    if ((v = getenv("LSFG_NSS_QUALITY"))) config.nssQuality = strcmp(v, "low") == 0 ? 0 : strcmp(v, "high") == 0 ? 2 : strcmp(v, "fast") == 0 ? 3 : 1;
     if ((v = getenv("LSFG_SCALER"))) config.scaler = scalerMode(@(v));
     if ((v = getenv("LSFG_SCALER_SHARPNESS"))) config.scalerSharpness = (float)atof(v);
     config.scalerSharpness = fminf(fmaxf(config.scalerSharpness, 0.0f), 1.0f);
@@ -353,7 +353,7 @@ static void loadConfig(void) {
     config.bufferMs = fminf(fmaxf(config.bufferMs, 0.0f), 50.0f);
     lsfg_log(@"profile for %@%@: frame generation %s %dx, %s mode, flow %.2f, buffer %.0f ms", exe, gamePath ? [@" from " stringByAppendingString:gamePath] : @"", config.enabled ? "on" : "off", config.multiplier,
              config.performance ? "performance" : "quality", config.flowScale, config.bufferMs);
-    lsfg_log(@"profile for %@: upscaler %s", exe, config.upscaler == 1 ? (config.nssQuality == 0 ? "NSS low" : config.nssQuality == 2 ? "NSS high" : "NSS mid") : "MetalFX");
+    lsfg_log(@"profile for %@: upscaler %s", exe, config.upscaler == 1 ? (config.nssQuality == 0 ? "NSS low" : config.nssQuality == 2 ? "NSS high" : config.nssQuality == 3 ? "NSS fast" : "NSS mid") : "MetalFX");
     static const char *scalerNames[] = {"off", "LS1", "FSR", "BCAS", "bicubic", "nearest"};
     lsfg_log(@"profile for %@: scaling %s, sharpness %.2f%s", exe, scalerNames[MAX(0, MIN(config.scaler, 5))], config.scalerSharpness,
              config.scaler == 1 && config.scalerPerformance ? ", performance" : "");
