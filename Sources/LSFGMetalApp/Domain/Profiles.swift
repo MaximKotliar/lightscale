@@ -17,9 +17,17 @@ struct GameProfile: Codable, Equatable, Sendable {
     var upscaler = "metalfx"
     /// NSS quality: "low", "mid" or "high".
     var nssQuality = "mid"
+    /// Lossless Scaling's spatial upscalers (lss-metal), for any game: the hook shows the game's frames scaled to the
+    /// window. "off", "ls1", "fsr", "bcas", "bicubic" or "nearest".
+    var scaler = "off"
+    /// 0…1 (LS1: its five trained weight sets, softest to sharpest).
+    var scalerSharpness = 0.5
+    /// LS1's single-pass variant: about half the GPU time.
+    var scalerPerformance = false
 
     init(enabled: Bool = true, multiplier: Int = 2, performance: Bool = true, flowScale: Double = 1.0, bufferMs: Double = 8.0, gptk: String? = nil,
-         upscaler: String = "metalfx", nssQuality: String = "mid") {
+         upscaler: String = "metalfx", nssQuality: String = "mid", scaler: String = "off", scalerSharpness: Double = 0.5,
+         scalerPerformance: Bool = false) {
         self.enabled = enabled
         self.multiplier = multiplier
         self.performance = performance
@@ -28,6 +36,9 @@ struct GameProfile: Codable, Equatable, Sendable {
         self.gptk = gptk
         self.upscaler = upscaler
         self.nssQuality = nssQuality
+        self.scaler = scaler
+        self.scalerSharpness = scalerSharpness
+        self.scalerPerformance = scalerPerformance
     }
 
     // Missing keys (older files) fall back to defaults instead of discarding the profile.
@@ -42,6 +53,9 @@ struct GameProfile: Codable, Equatable, Sendable {
         gptk = try c.decodeIfPresent(String.self, forKey: .gptk)
         upscaler = try c.decodeIfPresent(String.self, forKey: .upscaler) ?? d.upscaler
         nssQuality = try c.decodeIfPresent(String.self, forKey: .nssQuality) ?? d.nssQuality
+        scaler = try c.decodeIfPresent(String.self, forKey: .scaler) ?? d.scaler
+        scalerSharpness = try c.decodeIfPresent(Double.self, forKey: .scalerSharpness) ?? d.scalerSharpness
+        scalerPerformance = try c.decodeIfPresent(Bool.self, forKey: .scalerPerformance) ?? d.scalerPerformance
     }
 
     /// Off / 2x / 4x as one value (0, 1, 2) for the slider.

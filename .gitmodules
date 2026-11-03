@@ -4,3 +4,6 @@
 [submodule "vendor/nss-metal"]
 	path = vendor/nss-metal
 	url = https://github.com/MaximKotliar/nss-metal.git
+[submodule "vendor/lss-metal"]
+	path = vendor/lss-metal
+	url = https://github.com/MaximKotliar/lss-metal.git

@@ -105,6 +105,9 @@ enum HookInstaller {
         for file in ["lsfghook.dll", "lsfghook.so", "liblsfgbridge.dylib"] {
             try replace(HookFiles.builtinDir.appending(path: file), with: source.appending(path: file))
         }
+        // Lossless Scaling's spatial upscalers (lss-metal), when the app was built with them
+        let scaling = source.appending(path: "liblssbridge.dylib")
+        if fm.fileExists(atPath: scaling.path) { try replace(HookFiles.builtinDir.appending(path: "liblssbridge.dylib"), with: scaling) }
         // NSS upscaler: kernels, and Arm's weights with their license files (Arm AI Model Community License).
         let nssLib = source.appending(path: "nss.metallib")
         if fm.fileExists(atPath: nssLib.path) {

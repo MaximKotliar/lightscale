@@ -23,7 +23,7 @@ BIN=$(swift build --package-path "$ROOT" -c release --product "$NAME" --show-bin
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/Hook"
 cp "$BIN/$NAME" "$APP/Contents/MacOS/$NAME"
-for f in lsfghook.dll lsfghook.so lsfghook.placeholder.dll liblsfgbridge.dylib dinput8.dll version.dll; do
+for f in lsfghook.dll lsfghook.so lsfghook.placeholder.dll liblsfgbridge.dylib liblssbridge.dylib dinput8.dll version.dll; do
     cp "$ROOT/hook/build/$f" "$APP/Contents/Resources/Hook/"
 done
 [ -d "$ROOT/hook/build/baked" ] && cp -R "$ROOT/hook/build/baked" "$APP/Contents/Resources/Hook/baked"
@@ -83,6 +83,6 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 # Hardened runtime, no extra entitlements. Not sandboxed: the app edits CrossOver bottles and
 # runs CrossOver's wine, spirv-cross and Apple's metal compiler.
-codesign -s - -f --options runtime "$APP/Contents/Resources/Hook/lsfghook.so" "$APP/Contents/Resources/Hook/liblsfgbridge.dylib" 2>/dev/null
+codesign -s - -f --options runtime "$APP/Contents/Resources/Hook/lsfghook.so" "$APP/Contents/Resources/Hook/liblsfgbridge.dylib" "$APP/Contents/Resources/Hook/liblssbridge.dylib" 2>/dev/null
 codesign -s - -f --options runtime "$APP" 2>/dev/null
 echo "$APP"

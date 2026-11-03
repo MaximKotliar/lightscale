@@ -17,6 +17,7 @@ struct GameDetailView: View {
                 } else {
                     if let live = model.liveStats(for: game) { LiveCard(live: live) }
                     ProfileCard(game: game, model: model)
+                    ScalingCard(game: game, model: model)
                     UpscalerCard(game: game, model: model)
                     if model.status.crossOver != nil { GPTKCard(game: game, model: model) }
                 }
@@ -273,6 +274,50 @@ private struct SliderRow: View {
 
 /// One settings line: title (and optional caption) on the left, the control in a fixed right column,
 /// so every control in the card lines up.
+/// Lossless Scaling's spatial upscalers: the game renders at a lower resolution and the hook scales its frames up to
+/// the window. Works in any game (no DLSS needed).
+private struct ScalingCard: View {
+    let game: Game
+    let model: AppModel
+
+    private var profile: Binding<GameProfile> {
+        Binding(get: { model.profile(for: game) }, set: { model.setProfile($0, for: game) })
+    }
+
+    var body: some View {
+        let mode = profile.wrappedValue.scaler
+        Card(title: "Scaling") {
+            SettingRow(title: "Upscaler", caption: caption(mode)) {
+                Picker("Upscaler", selection: profile.scaler) {
+                    Text("Off").tag("off")
+                    Text("LS1").tag("ls1")
+                    Text("FSR").tag("fsr")
+                    Text("BCAS").tag("bcas")
+                    Text("Bicubic").tag("bicubic")
+                    Text("Nearest").tag("nearest")
+                }
+                .labelsHidden()
+                .frame(width: 140)
+            }
+            if ["ls1", "fsr", "bcas"].contains(mode) {
+                SliderRow(title: "Sharpness", value: profile.scalerSharpness, range: 0...1, step: 0.25) { "\(Int(($0 * 100).rounded()))%" }
+            }
+            if mode == "ls1" {
+                SettingRow(title: "Performance", caption: "LS1's single-pass variant: about half the GPU time, a little less detail.") {
+                    Toggle("Performance", isOn: profile.scalerPerformance).labelsHidden()
+                }
+            }
+        }
+    }
+
+    private func caption(_ mode: String) -> String {
+        if mode == "off" { return "Set the game to a lower resolution and pick an upscaler: its frames are scaled up to the window, in any game." }
+        let what = ["ls1": "Lossless Scaling's own trained upscaler", "fsr": "AMD FSR 1", "bcas": "bicubic with AMD's contrast-adaptive sharpening",
+                    "bicubic": "plain bicubic", "nearest": "nearest neighbour (sharp pixels; integer scaling at whole ratios)"][mode] ?? mode
+        return "Set the game to a lower resolution: its frames are scaled up to the window with \(what). Uses your Lossless Scaling."
+    }
+}
+
 /// What the game can use, at a glance: the frame-generation hook, and the upscalers it ships.
 private struct SupportRow: View {
     let game: Game

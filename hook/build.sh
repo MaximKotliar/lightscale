@@ -54,4 +54,10 @@ LSFG=${LSFG_METAL:-../vendor/lsfg-metal}
 (cd "$LSFG" && swift build -c release --arch x86_64 --product LSFGBridge >/dev/null)
 cp "$(cd "$LSFG" && swift build -c release --arch x86_64 --product LSFGBridge --show-bin-path)/libLSFGBridge.dylib" "$OUT/liblsfgbridge.dylib"
 codesign -s - -f "$OUT/liblsfgbridge.dylib" 2>/dev/null
+
+# Lossless Scaling's spatial upscalers for the hook: lss-metal's C API (vendor/lss-metal), x86_64 too.
+LSS=${LSS_METAL:-../vendor/lss-metal}
+(cd "$LSS" && swift build -c release --arch x86_64 --product LSSBridge >/dev/null)
+cp "$(cd "$LSS" && swift build -c release --arch x86_64 --product LSSBridge --show-bin-path)/libLSSBridge.dylib" "$OUT/liblssbridge.dylib"
+codesign -s - -f "$OUT/liblssbridge.dylib" 2>/dev/null
 echo "built: $(ls "$OUT" | grep -v obj | tr '\n' ' ')"

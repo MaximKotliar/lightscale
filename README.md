@@ -6,6 +6,9 @@ A Mac app that makes Windows games running under CrossOver smoother and sharper 
 
 - **Frame generation:** Lossless Scaling's LSFG 3.1, running natively on Metal, inserts generated frames (2×–4×).
   Needs your own copy of [Lossless Scaling on Steam](https://store.steampowered.com/app/993090/).
+- **Scaling, in any game:** run the game at a lower resolution and Lightscale scales its frames up to the window with
+  Lossless Scaling's own upscalers (LS1, FSR 1, BCAS, bicubic) or nearest neighbour, like Lossless Scaling does on
+  Windows. Works with or without frame generation.
 - **Neural upscaling:** in games that use DLSS (which Apple's Game Porting Toolkit turns into MetalFX), Arm's
   [Neural Super Sampling](https://huggingface.co/Arm/neural-super-sampling) can replace MetalFX: a sharper, more stable
   image at about the same GPU cost. ([Paper](https://huggingface.co/Arm/neural-super-sampling/blob/main/2025-neural-super-sampling.pdf),
@@ -38,6 +41,11 @@ Needs Xcode. The two engines are submodules, pinned to tested commits:
 |---|---|
 | [`vendor/lsfg-metal`](https://github.com/MaximKotliar/lsfg-metal) | LSFG 3.1 frame generation on Metal (Swift package; its C API is built for x86_64 for the hook) |
 | [`vendor/nss-metal`](https://github.com/MaximKotliar/nss-metal) | Arm Neural Super Sampling on Metal (compiled into the hook) |
+| [`vendor/lss-metal`](https://github.com/MaximKotliar/lss-metal) | Lossless Scaling's spatial upscalers on Metal (its C API is built for x86_64 for the hook) |
+
+Scaling uses Lossless Scaling's DXBC shaders, translated on your Mac by lsfg-metal's `scripts/translate-shaders.sh`
+with `DXBC_COMPILER` set (see lss-metal's README). The app doesn't do that translation itself yet, so for now scaling
+only works where it's been run.
 
 Update one with `git -C vendor/nss-metal pull origin main` and commit the new pointer.
 

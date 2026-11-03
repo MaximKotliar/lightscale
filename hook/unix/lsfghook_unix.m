@@ -267,7 +267,16 @@ static void trackPresented(id<CAMetalDrawable> d) {
 
 // The effective settings for this game: defaults, then profiles.json, then environment.
 // upscaler: 0 MetalFX (as the game asked), 1 NSS in its place. nssQuality: 0 low, 1 mid, 2 high.
-static struct { BOOL enabled, performance; int multiplier; float flowScale, bufferMs; int upscaler, nssQuality; } config = { YES, YES, 2, 1.0f, 8.0f, 0, 1 };
+// scaler (Lossless Scaling's spatial upscalers, lss-metal): 0 off, 1 LS1, 2 FSR, 3 BCAS, 4 bicubic, 5 nearest;
+// the overlay then shows the game's frames scaled to the window. scalerSharpness 0-1, scalerPerformance: LS1's
+// single-pass variant.
+static struct { BOOL enabled, performance; int multiplier; float flowScale, bufferMs; int upscaler, nssQuality;
+                int scaler; float scalerSharpness; BOOL scalerPerformance; } config = { YES, YES, 2, 1.0f, 8.0f, 0, 1, 0, 0.5f, NO };
+static int scalerMode(NSString *s) {
+    NSArray *names = @[@"off", @"ls1", @"fsr", @"bcas", @"bicubic", @"nearest"];
+    NSUInteger i = [names indexOfObject:s.lowercaseString];
+    return i == NSNotFound ? 0 : (int)i;
+}
 
 static void applyProfile(NSDictionary *p) {
     if (![p isKindOfClass:NSDictionary.class]) return;
@@ -281,6 +290,9 @@ static void applyProfile(NSDictionary *p) {
         NSString *q = p[@"nssQuality"];
         config.nssQuality = [q isEqualToString:@"low"] ? 0 : [q isEqualToString:@"high"] ? 2 : 1;
     }
+    if ([p[@"scaler"] isKindOfClass:NSString.class]) config.scaler = scalerMode(p[@"scaler"]);
+    if ([p[@"scalerSharpness"] isKindOfClass:NSNumber.class]) config.scalerSharpness = [p[@"scalerSharpness"] floatValue];
+    if ([p[@"scalerPerformance"] isKindOfClass:NSNumber.class]) config.scalerPerformance = [p[@"scalerPerformance"] boolValue];
 }
 
 // The running .exe as a Unix path, sent by the PE side when it loads (nil until then).
@@ -304,6 +316,7 @@ static NSString *gameProfilePath(void) {
 static void loadConfig(void) {
     config.enabled = YES; config.performance = YES; config.multiplier = 2;
     config.flowScale = 1.0f; config.bufferMs = 8.0f; config.upscaler = 0; config.nssQuality = 1;
+    config.scaler = 0; config.scalerSharpness = 0.5f; config.scalerPerformance = NO;
     NSData *data = [NSData dataWithContentsOfFile:profilesPath()];
     NSDictionary *root = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
     NSString *exe = (exePath.lastPathComponent ?: NSProcessInfo.processInfo.processName).lowercaseString;
@@ -320,7 +333,7 @@ static void loadConfig(void) {
     static dispatch_once_t warned;
     dispatch_once(&warned, ^{
         NSMutableArray *set = [NSMutableArray array];
-        for (NSString *name in @[@"LSFG_FG", @"LSFG_PERFORMANCE", @"LSFG_FLOW_SCALE", @"LSFG_BUFFER_MS", @"LSFG_MULTIPLIER", @"LSFG_UPSCALER", @"LSFG_NSS_QUALITY"])
+        for (NSString *name in @[@"LSFG_FG", @"LSFG_PERFORMANCE", @"LSFG_FLOW_SCALE", @"LSFG_BUFFER_MS", @"LSFG_MULTIPLIER", @"LSFG_UPSCALER", @"LSFG_NSS_QUALITY", @"LSFG_SCALER", @"LSFG_SCALER_SHARPNESS"])
             if (getenv(name.UTF8String)) [set addObject:name];
         if (set.count) lsfg_log(@"environment overrides the profile (the app can't change these): %@", [set componentsJoinedByString:@", "]);
     });
@@ -332,16 +345,24 @@ static void loadConfig(void) {
     if ((v = getenv("LSFG_MULTIPLIER"))) config.multiplier = atoi(v);
     if ((v = getenv("LSFG_UPSCALER"))) config.upscaler = strcmp(v, "nss") == 0 ? 1 : 0;
     if ((v = getenv("LSFG_NSS_QUALITY"))) config.nssQuality = strcmp(v, "low") == 0 ? 0 : strcmp(v, "high") == 0 ? 2 : 1;
+    if ((v = getenv("LSFG_SCALER"))) config.scaler = scalerMode(@(v));
+    if ((v = getenv("LSFG_SCALER_SHARPNESS"))) config.scalerSharpness = (float)atof(v);
+    config.scalerSharpness = fminf(fmaxf(config.scalerSharpness, 0.0f), 1.0f);
     config.multiplier = MAX(2, MIN(config.multiplier, kMaxGenerated + 1));
     config.flowScale = fminf(fmaxf(config.flowScale, 0.25f), 1.0f);
     config.bufferMs = fminf(fmaxf(config.bufferMs, 0.0f), 50.0f);
     lsfg_log(@"profile for %@%@: frame generation %s %dx, %s mode, flow %.2f, buffer %.0f ms", exe, gamePath ? [@" from " stringByAppendingString:gamePath] : @"", config.enabled ? "on" : "off", config.multiplier,
              config.performance ? "performance" : "quality", config.flowScale, config.bufferMs);
     lsfg_log(@"profile for %@: upscaler %s", exe, config.upscaler == 1 ? (config.nssQuality == 0 ? "NSS low" : config.nssQuality == 2 ? "NSS high" : "NSS mid") : "MetalFX");
+    static const char *scalerNames[] = {"off", "LS1", "FSR", "BCAS", "bicubic", "nearest"};
+    lsfg_log(@"profile for %@: scaling %s, sharpness %.2f%s", exe, scalerNames[MAX(0, MIN(config.scaler, 5))], config.scalerSharpness,
+             config.scaler == 1 && config.scalerPerformance ? ", performance" : "");
 }
 
 static void fgRebuild(void);
 static void setOverlayHidden(BOOL hidden);
+static void updateScaler(void);
+static BOOL traceOn(void);
 
 // The app saves profiles.json on every change; pick changes up while the game runs (checked
 // once a second). On/off and the pacing buffer apply at once; the rest rebuilds the context.
@@ -355,6 +376,9 @@ static void applyConfigChanges(void) {
     }
     if (config.multiplier != before.multiplier || config.performance != before.performance || config.flowScale != before.flowScale)
         fgRebuild();
+    if (config.scaler != before.scaler || config.scalerSharpness != before.scalerSharpness ||
+        config.scalerPerformance != before.scalerPerformance)
+        dispatch_async(dispatch_get_main_queue(), ^{ updateScaler(); });
 }
 
 // Called once a second: reloads when profiles.json or the game folder's profile changes (or
@@ -392,6 +416,33 @@ static BOOL loadBridge(void) {
     bridge.destroy = (bridge_destroy_fn)dlsym(lib, "lsfg_bridge_destroy");
     return bridge.create && bridge.input && bridge.encode && bridge.output && bridge.destroy;
 }
+
+// Lossless Scaling's spatial upscalers (lss-metal's C API, liblssbridge.dylib next to this library).
+typedef void *(*lss_create_fn)(const void *, int, int, int, int, unsigned, int, float, int, char *, int);
+typedef int (*lss_encode_fn)(void *, const void *, const void *, const void *, int, int);
+typedef void (*lss_destroy_fn)(void *);
+static struct { lss_create_fn create; lss_encode_fn encode; lss_destroy_fn destroy; } lss;
+static BOOL scaleAvailable;
+
+static BOOL loadScaleBridge(void) {
+    Dl_info info = {0};
+    dladdr((void *)loadScaleBridge, &info);
+    NSString *path = [[@(info.dli_fname ?: ".") stringByDeletingLastPathComponent]
+                      stringByAppendingPathComponent:@"liblssbridge.dylib"];
+    void *lib = dlopen(path.fileSystemRepresentation, RTLD_NOW | RTLD_LOCAL);
+    if (!lib) { lsfg_log(@"scaling unavailable: cannot load %@: %s", path, dlerror()); return NO; }
+    lss.create = (lss_create_fn)dlsym(lib, "lss_bridge_create");
+    lss.encode = (lss_encode_fn)dlsym(lib, "lss_bridge_encode");
+    lss.destroy = (lss_destroy_fn)dlsym(lib, "lss_bridge_destroy");
+    return lss.create && lss.encode && lss.destroy;
+}
+
+// The upscaler the display link draws with: the game's frame (in) into an aspect-fit rect (out) of the overlay's
+// drawable (canvas, the window's real pixels). NULL: frames are shown at their own size.
+typedef struct { void *ctx; int inW, inH, outW, outH, outX, outY, canvasW, canvasH, mode, perf; float sharpness; } ScaleCtx;
+static ScaleCtx *_Atomic scaleCurrent;
+static _Atomic bool scaleUpdateQueued;   // an updateScaler is queued or its upscaler is still being built
+static BOOL scalerWanted(void) { return scaleAvailable && config.scaler != 0; }
 
 // Ring textures for the frames being shown. Rings only grow (a later 2x → 4x reuses them).
 static void allocateRings(id<MTLDevice> device, NSUInteger w, NSUInteger h, MTLPixelFormat format, int multiplier) {
@@ -498,7 +549,65 @@ static void attachOverlay(CAMetalLayer *game) {
         overlay = o;
         startDisplayLink(o);
         atomic_store(&overlayState, 2);
+        updateScaler();
         lsfg_log(@"overlay attached: %.0fx%.0f on %@", o.drawableSize.width, o.drawableSize.height, NSStringFromClass([game class]));
+    });
+}
+
+// Sizes the overlay for the current scaling setting and builds the upscaler for it (main thread). With scaling on,
+// the overlay's drawable has the window's real pixel size and the game's frames are upscaled into it; otherwise it
+// has the frames' own size.
+static void updateScaler(void) {
+    CAMetalLayer *o = overlay;
+    if (traceOn()) lsfg_log(@"trace scaler: overlay %@ state %d frames %lux%lu, wanted %d (bridge %d, mode %d), bounds %@ scale %.1f",
+                            o, atomic_load(&overlayState), (unsigned long)fgWidth, (unsigned long)fgHeight, scalerWanted(), scaleAvailable,
+                            config.scaler, NSStringFromRect(NSRectFromCGRect(o.bounds)), o.contentsScale);
+    if (!o || atomic_load(&overlayState) != 2 || fgWidth == 0) { atomic_store(&scaleUpdateQueued, false); return; }
+    const int inW = (int)fgWidth, inH = (int)fgHeight;
+    const CGSize native = CGSizeMake(round(o.bounds.size.width * o.contentsScale), round(o.bounds.size.height * o.contentsScale));
+    const BOOL scale = scalerWanted() && (native.width > inW + 1 || native.height > inH + 1);   // upscaling only
+    const CGSize canvas = scale ? native : CGSizeMake(inW, inH);
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    if (!CGSizeEqualToSize(o.drawableSize, canvas)) o.drawableSize = canvas;
+    [CATransaction commit];
+    const int mode = config.scaler, perf = config.scalerPerformance;
+    const float sharpness = config.scalerSharpness;
+    id<MTLDevice> device = fgDevice;
+    const MTLPixelFormat format = fgFormat;
+    static dispatch_queue_t queue;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ queue = dispatch_queue_create("lsfg.scaler", DISPATCH_QUEUE_SERIAL); });
+    atomic_store(&scaleUpdateQueued, true);   // until the swap below: the display link waits instead of asking again
+    dispatch_async(queue, ^{
+        ScaleCtx *cur = atomic_load(&scaleCurrent);
+        if (scale && cur && cur->inW == inW && cur->inH == inH && cur->canvasW == (int)canvas.width &&
+            cur->canvasH == (int)canvas.height && cur->mode == mode && cur->perf == perf && cur->sharpness == sharpness) {
+            atomic_store(&scaleUpdateQueued, false);   // already what's wanted
+            return;
+        }
+        ScaleCtx *next = NULL;
+        if (scale && device) {
+            const double f = MIN(canvas.width / inW, canvas.height / inH);
+            const int ow = (int)llround(inW * f), oh = (int)llround(inH * f);
+            char error[512] = {0};
+            CFTimeInterval t0 = CACurrentMediaTime();
+            void *ctx = lss.create((__bridge const void *)device, inW, inH, ow, oh, (unsigned)format, mode, sharpness, perf, error, sizeof error);
+            if (!ctx) {
+                lsfg_log(@"scaling off: %s", error);
+            } else {
+                next = calloc(1, sizeof *next);
+                *next = (ScaleCtx){ ctx, inW, inH, ow, oh, ((int)canvas.width - ow) / 2, ((int)canvas.height - oh) / 2,
+                                    (int)canvas.width, (int)canvas.height, mode, perf, sharpness };
+                lsfg_log(@"scaling %dx%d -> %dx%d in a %.0fx%.0f window (mode %d, sharpness %.2f), set up in %.2fs", inW, inH,
+                         ow, oh, canvas.width, canvas.height, mode, sharpness, CACurrentMediaTime() - t0);
+            }
+        } else if (scalerWanted()) {
+            lsfg_log(@"scaling: frames are %dx%d, the window %.0fx%.0f: nothing to upscale", inW, inH, native.width, native.height);
+        }
+        ScaleCtx *old = atomic_exchange(&scaleCurrent, next);
+        atomic_store(&scaleUpdateQueued, false);
+        if (old) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), queue, ^{ lss.destroy(old->ctx); free(old); });
     });
 }
 
@@ -534,7 +643,8 @@ static double effectiveRefresh(void) {
 
 // Frame generation stepped aside because the game runs too fast for generated frames (fgShouldRun).
 static _Atomic bool fgSteppedAside;
-static BOOL fgShowing(void) { return atomic_load(&fgOn) && !atomic_load(&fgSteppedAside); }
+static BOOL fgShowing(void) { return (atomic_load(&fgOn) && !atomic_load(&fgSteppedAside)) || scalerWanted(); }
+static BOOL fgRunLSFG;   // this frame: frame generation runs (otherwise frames are only captured, for scaling)
 
 // Display times follow a steady cadence: each frame continues from the previous real frame's
 // target, so the game's frame-time jitter doesn't reach the screen. The cadence only snaps to
@@ -623,10 +733,34 @@ static void presentSlot(int slot, int generated, CFTimeInterval completedAt) {
     if (!found) return; // nothing new: the previous frame stays on screen
 
     id<CAMetalDrawable> drawable = update.drawable;
+    id<MTLTexture> frame = show.index < 0 ? realRing[show.slot] : genRing[show.slot][show.index], dst = drawable.texture;
+    ScaleCtx *sc = atomic_load(&scaleCurrent);
+    const BOOL scaled = sc && (int)dst.width == sc->canvasW && (int)dst.height == sc->canvasH &&
+                        (int)frame.width == sc->inW && (int)frame.height == sc->inH;
+    if (!scaled && (dst.width != frame.width || dst.height != frame.height)) {
+        // the overlay is being resized for a scaling change: wait for its new size (or upscaler)
+        if (!atomic_exchange(&scaleUpdateQueued, true)) dispatch_async(dispatch_get_main_queue(), ^{ updateScaler(); });
+        os_unfair_lock_lock(&queueLock);
+        releaseFrameLocked(show);
+        os_unfair_lock_unlock(&queueLock);
+        return;
+    }
     id<MTLCommandBuffer> cb = [presentQueue commandBuffer];
-    id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
-    [blit copyFromTexture:show.index < 0 ? realRing[show.slot] : genRing[show.slot][show.index] toTexture:drawable.texture];
-    [blit endEncoding];
+    if (scaled) {
+        if (sc->outW < sc->canvasW || sc->outH < sc->canvasH) {   // letterbox: black around the picture
+            MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+            rp.colorAttachments[0].texture = dst;
+            rp.colorAttachments[0].loadAction = MTLLoadActionClear;
+            rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
+            rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+            [[cb renderCommandEncoderWithDescriptor:rp] endEncoding];
+        }
+        lss.encode(sc->ctx, (__bridge const void *)cb, (__bridge const void *)frame, (__bridge const void *)dst, sc->outX, sc->outY);
+    } else {
+        id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+        [blit copyFromTexture:frame toTexture:dst];
+        [blit endEncoding];
+    }
     trackPresented(drawable);
     [cb presentDrawable:drawable];
     [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
@@ -693,9 +827,11 @@ static BOOL fgShouldRun(void) {
             lsfg_log(@"game at %.0f fps: frame generation back on", 1 / gameInterval);
         }
     }
-    if (atomic_load(&fgOn) && !aside) return YES;
+    fgRunLSFG = atomic_load(&fgOn) && !aside;
+    if (fgRunLSFG) return YES;
+    fgWarmup = 1;                 // LSFG's history goes stale meanwhile: prime it again when it resumes
+    if (scalerWanted()) return YES;   // the overlay still shows the game's own frames, upscaled
     if (atomic_load(&overlayState) == 2) setOverlayHidden(YES);
-    fgWarmup = 1;
     return NO;
 }
 
@@ -729,7 +865,9 @@ static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, void (^targ
     // generation just switched back on) has no history yet: its first frame only primes it, and
     // the game presents that one itself too.
     BOOL capture = ov == 2;
-    if (capture && fgWarmup > 0) { fgWarmup--; capture = NO; }
+    // While LSFG primes (no history yet) the game shows its own frame, unless scaling needs the overlay anyway.
+    BOOL priming = NO;
+    if (fgRunLSFG && fgWarmup > 0) { fgWarmup--; priming = YES; if (!scalerWanted()) capture = NO; }
 
     // A slot frees up when the display has shown (or skipped) its frames. If none frees up within
     // 2 ms (game running faster than the slots cover, or the display link slowed down because the
@@ -751,11 +889,12 @@ static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, void (^targ
     // keep the real frame for display. These are the only reads of the game's frame.
     id<MTLTexture> input = (__bridge id<MTLTexture>)bridge.input(fgContext);
     id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
-    [blit copyFromTexture:target toTexture:input];
+    if (fgRunLSFG) [blit copyFromTexture:target toTexture:input];
     if (capture) [blit copyFromTexture:target toTexture:realRing[slot]];
     [blit endEncoding];
     if (targetRead) targetRead(cb);
-    int generated = bridge.encode(fgContext, (__bridge const void *)cb);
+    int generated = fgRunLSFG ? bridge.encode(fgContext, (__bridge const void *)cb) : 0;
+    if (priming) generated = 0;
     if (!capture) return;
 
     blit = [cb blitCommandEncoder];
@@ -1206,6 +1345,7 @@ __attribute__((constructor)) static void lsfg_unix_init(void) {
         loadConfig();
         // Loaded even when the profile has frame generation off, so it can be switched on live.
         fgAvailable = envOn("LSFG_READABLE", YES) && loadBridge();
+        scaleAvailable = fgAvailable && loadScaleBridge();
         atomic_store(&fgOn, config.enabled);
         captured = [NSMutableSet set];
         lsfg_log(@"frame generation %s", !fgAvailable ? "unavailable" : config.enabled ? "on" : "off");

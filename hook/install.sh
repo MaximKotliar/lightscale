@@ -97,6 +97,7 @@ fi
 
 mkdir -p "$ROOT/wine/x86_64-windows"
 cp "$BUILD/lsfghook.dll" "$BUILD/lsfghook.so" "$BUILD/liblsfgbridge.dylib" "$ROOT/wine/x86_64-windows/"
+[ -f "$BUILD/liblssbridge.dylib" ] && cp "$BUILD/liblssbridge.dylib" "$ROOT/wine/x86_64-windows/"   # scaling (optional)
 mkdir -p "$ROOT/nss" && cp "$BUILD/nss.metallib" "$BUILD"/NSSWeights/* "$ROOT/nss/"   # NSS kernels, and Arm's weights with their license files
 if [ -d "$BUILD/baked" ]; then rm -rf "$ROOT/wine/x86_64-windows/baked"; cp -R "$BUILD/baked" "$ROOT/wine/x86_64-windows/baked"; fi
 echo "installed hook to $ROOT"
