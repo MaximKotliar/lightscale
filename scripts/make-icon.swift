@@ -1,4 +1,4 @@
-// Draws the LSFG Metal app icon (1024x1024 PNG): two offset frames with a sparkle between them,
+// Draws the app icon (1024x1024 PNG): two offset frames with a sparkle between them,
 // on a blue-violet rounded square. Usage: swift scripts/make-icon.swift OUT.png
 import AppKit
 

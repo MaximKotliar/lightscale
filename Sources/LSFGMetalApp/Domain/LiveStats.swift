@@ -1,6 +1,6 @@
 import Foundation
 
-/// One second of the hook's own measurements (from ~/Library/Logs/lsfg-metal.log).
+/// One second of the hook's own measurements (from ~/Library/Logs/Lightscale.log).
 struct LiveSample: Sendable, Identifiable {
     let time: Double          // hook clock (seconds)
     let pid: Int
@@ -16,7 +16,7 @@ struct LiveSample: Sendable, Identifiable {
 
 enum LiveStats {
     static var logURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Logs/lsfg-metal.log")
+        FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Logs/\(AppName.folder).log")
     }
 
     /// What the hook is measuring right now: the game it runs in and its last samples.

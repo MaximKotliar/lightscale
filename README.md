@@ -1,6 +1,8 @@
-# lsfg-metal
+# Lightscale
 
-Lossless Scaling frame generation (LSFG) for Windows games running on Apple Silicon through CrossOver / D3DMetal.
+*Working name; the repo and the command-line tool are still called `lsfg-metal`.*
+
+Frame generation (Lossless Scaling's LSFG) and upscaling (Arm NSS, or the game's own MetalFX) for Windows games running on Apple Silicon through CrossOver / D3DMetal.
 
 Only for people who own [Lossless Scaling on Steam](https://store.steampowered.com/app/993090/). The LSFG shaders are read at runtime from your own `Lossless.dll`. This repo never contains the DLL, the shaders or anything derived from them.
 
@@ -37,12 +39,12 @@ Sustained GPU cost per real frame at 2× on an M4 Max: 0.4–2.0 ms at 1080p–1
 
 ## App
 
-`scripts/build-app.sh` builds **LSFG Metal.app** (`build/LSFG Metal.app`):
+`scripts/build-app.sh` builds **Lightscale.app** (`build/Lightscale.app`). Its data lives in `~/Library/Application Support/Lightscale` and the hook logs to `~/Library/Logs/Lightscale.log`. On first launch the app moves the data from the old `lsfg-metal` folder and leaves a link there, so bottles set up before the rename keep working.
 
 - **First launch:** a one-time setup checklist (Apple silicon, CrossOver, your Steam copy of Lossless Scaling, the frame-generation kernels, the game hook). After that, setup only reappears as a small banner if something breaks, for example after a Lossless Scaling update. **Check Setup…** (⇧⌘,) opens it any time.
 - **Games:** Steam games from every CrossOver bottle, plus any `.exe` you add with **Add Game** (remembered across launches; right-click to remove). Install picks the right proxy DLL from the game's imports. Games with anti-cheat, 32-bit games, and folders where another mod uses the proxy name are explained and left alone.
 - **Per-game profiles:** frame rate Off / 2× / 4×, performance or quality mode, motion detail and pacing buffer for each game. They're stored in each game's folder (`.lsfg/profile.json`, next to the proxy DLL), so every program the game runs shares them, and the hook picks up changes within a second, even mid-game.
-- **GPTK picker:** each game can name the Game Porting Toolkit version it should run with, and the app offers to switch CrossOver to it. CrossOver has one GPTK for all bottles, so a switch applies to every game and needs Steam closed. macOS asks once to let the app change CrossOver (App Management). `scripts/build-app.sh` bundles the versions it finds in `GPTK_SOURCES` (default: `~/Applications/CrossOver-GPTK-3.0-backup/apple_gptk` and `~/Applications/GPTK-4.0b3/lib`). They're never committed. A version CrossOver had that the app doesn't carry is saved to `~/Library/Application Support/lsfg-metal/gptk` before it's replaced.
+- **GPTK picker:** each game can name the Game Porting Toolkit version it should run with, and the app offers to switch CrossOver to it. CrossOver has one GPTK for all bottles, so a switch applies to every game and needs Steam closed. macOS asks once to let the app change CrossOver (App Management). `scripts/build-app.sh` bundles the versions it finds in `GPTK_SOURCES` (default: `~/Applications/CrossOver-GPTK-3.0-backup/apple_gptk` and `~/Applications/GPTK-4.0b3/lib`). They're never committed. A version CrossOver had that the app doesn't carry is saved to `~/Library/Application Support/Lightscale/gptk` before it's replaced.
 - **Now Playing:** while a hooked game runs, its page shows game fps → on-screen fps, frame time and a 60-second chart.
 
 The app isn't sandboxed, because it edits CrossOver bottles and runs CrossOver's `wine`. It's built with the hardened runtime and no extra entitlements.

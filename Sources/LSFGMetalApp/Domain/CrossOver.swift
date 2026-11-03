@@ -1,7 +1,7 @@
 import Foundation
 import LSFGCore
 
-/// The CrossOver app and the pieces of it lsfg-metal uses (read-only: nothing in it is changed).
+/// The CrossOver app and the pieces of it the app uses (read-only: nothing in it is changed).
 struct CrossOverInstall: Sendable, Hashable {
     let app: URL
     let version: String

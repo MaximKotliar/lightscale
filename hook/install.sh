@@ -1,12 +1,12 @@
 #!/bin/bash
-# Install or remove the lsfg-metal hook for one game in one CrossOver bottle.
+# Install or remove the hook for one game in one CrossOver bottle.
 #
 #   hook/install.sh --bottle ~/CXPBottles/Steam --game-dir "/…/The Witcher 3/bin/x64_dx12" \
 #                   --exe witcher3.exe --proxy dinput8
 #   hook/install.sh --uninstall (same arguments)
 #
 # What it changes (all reversible with --uninstall):
-#   1. ~/Library/Application Support/lsfg-metal/wine/x86_64-windows/  lsfghook.dll, lsfghook.so,
+#   1. ~/Library/Application Support/Lightscale/wine/x86_64-windows/  lsfghook.dll, lsfghook.so,
 #      liblsfgbridge.dylib (the LSFG engine; shaders come from your Lossless.dll at runtime)
 #   2. <bottle>/cxbottle.conf   [Wine] "LibPath" adds that folder to Wine's builtin DLL search path
 #                               (backup: cxbottle.conf.lsfg-backup)
@@ -19,7 +19,10 @@ set -euo pipefail
 CX=${CX:-$HOME/Applications/CrossOver.app/Contents/SharedSupport/CrossOver}
 [ -d "$CX" ] || CX=/Applications/CrossOver.app/Contents/SharedSupport/CrossOver
 BUILD=$(cd "$(dirname "$0")" && pwd)/build
-ROOT="$HOME/Library/Application Support/lsfg-metal"
+ROOT="$HOME/Library/Application Support/Lightscale"
+# before the rename the folder was lsfg-metal: move it once and leave a link (older bottles' LibPath names it)
+LEGACY="$HOME/Library/Application Support/lsfg-metal"
+if [ -d "$LEGACY" ] && [ ! -L "$LEGACY" ] && [ ! -e "$ROOT" ]; then mv "$LEGACY" "$ROOT" && ln -s "$ROOT" "$LEGACY"; fi
 BEGIN=";; lsfg-metal: begin" END=";; lsfg-metal: end"
 
 uninstall=0 bottle="" game_dir="" exe="" proxy=""
@@ -103,4 +106,4 @@ fi
 cp "$BUILD/lsfghook.placeholder.dll" "$placeholder"
 cp "$BUILD/$proxy.dll" "$game_dir/$proxy.dll"
 wine_reg add "$key" /v "$proxy" /d native,builtin /f
-echo "installed $proxy.dll proxy for $exe; log: ~/Library/Logs/lsfg-metal.log"
+echo "installed $proxy.dll proxy for $exe; log: ~/Library/Logs/Lightscale.log"

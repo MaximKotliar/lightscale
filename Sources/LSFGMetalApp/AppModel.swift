@@ -23,7 +23,12 @@ final class AppModel {
 
     /// Setup runs once; afterwards problems show as a banner instead.
     var hasCompletedSetup: Bool {
-        get { access(keyPath: \.hasCompletedSetup); return UserDefaults.standard.bool(forKey: "setupComplete") }
+        get {
+            access(keyPath: \.hasCompletedSetup)
+            // the old app's bundle ID kept its own settings: setup done there counts here
+            return UserDefaults.standard.bool(forKey: "setupComplete")
+                || (UserDefaults(suiteName: AppName.legacyBundleID)?.bool(forKey: "setupComplete") ?? false)
+        }
         set { withMutation(keyPath: \.hasCompletedSetup) { UserDefaults.standard.set(newValue, forKey: "setupComplete") } }
     }
 

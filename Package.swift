@@ -9,8 +9,8 @@ let package = Package(
         .executable(name: "lsfg-metal", targets: ["lsfg-metal"]),
         // C API for the CrossOver hook; built for x86_64 (Rosetta) by hook/build.sh.
         .library(name: "LSFGBridge", type: .dynamic, targets: ["LSFGBridge"]),
-        // The setup app (bundled into "LSFG Metal.app" by scripts/build-app.sh).
-        .executable(name: "LSFGMetal", targets: ["LSFGMetalApp"]),
+        // The setup app (bundled into "Lightscale.app" by scripts/build-app.sh).
+        .executable(name: "Lightscale", targets: ["LSFGMetalApp"]),
     ],
     targets: [
         .target(name: "LSFGCore"),

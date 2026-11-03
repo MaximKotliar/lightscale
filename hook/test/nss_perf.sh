@@ -19,7 +19,7 @@ up=nss; [ "$mode" = metalfx ] && up=metalfx
 # freshly built kernels, installed weights
 nssdir="$out/nss"; mkdir -p "$nssdir"
 cp build/nss.metallib "$nssdir/"
-for w in nss_high.bin nss_midlow.bin; do ln -sf "$HOME/Library/Application Support/lsfg-metal/nss/$w" "$nssdir/$w"; done
+for w in nss_high.bin nss_midlow.bin; do ln -sf "$HOME/Library/Application Support/Lightscale/nss/$w" "$nssdir/$w"; done
 TEST_MTL4=1 TEST_SIZE=$size DYLD_INSERT_LIBRARIES=$PWD/build/lsfghook.so LSFG_UPSCALER=$up LSFG_NSS_QUALITY=$mode \
     LSFG_FG=0 LSFG_NSS_PROFILE=10 LSFG_NSS_DIR="$nssdir" LSFG_LOG="$log" build/nss_hook_test "$out/$mode.png" "${FRAMES:-900}" >/dev/null 2>&1
 ${PYTHON:-python3} - "$log" "$out/$mode.png" "$ref" "$mode" "$size" <<'EOF'

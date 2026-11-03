@@ -21,7 +21,7 @@ enum GPTKError: LocalizedError {
         case .wineRunning:
             "Quit Steam and every game in CrossOver first. They use the current GPTK while they run."
         case .notAllowed:
-            "macOS didn't let LSFG Metal change CrossOver. Allow it in System Settings → Privacy & Security → App Management, then try again."
+            "macOS didn't let \(AppName.display) change CrossOver. Allow it in System Settings → Privacy & Security → App Management, then try again."
         case let .incomplete(version):
             "GPTK \(version) in this app is incomplete. Rebuild the app."
         }

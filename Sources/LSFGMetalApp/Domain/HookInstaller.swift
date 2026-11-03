@@ -32,7 +32,27 @@ enum HookFiles {
 
     /// Shared install location, added to each hooked bottle's DLL search path.
     static var root: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Application Support/\(AppName.folder)")
+    }
+    /// Where the data lived before the rename (still in older bottles' LibPath).
+    static var legacyRoot: URL {
         FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Application Support/lsfg-metal")
+    }
+
+    /// Moves the data from the old folder to the new one, once, and leaves a link at the old path so bottles set up
+    /// before the rename (their LibPath names it) and hooks that look there still find everything.
+    static func migrateLegacyFolder() {
+        let fm = FileManager.default
+        let old = legacyRoot, new = root
+        let oldIsLink = (try? fm.destinationOfSymbolicLink(atPath: old.path)) != nil
+        guard !oldIsLink, fm.fileExists(atPath: old.path) else { return }
+        guard !fm.fileExists(atPath: new.path) else { return }   // both exist: leave them alone
+        do {
+            try fm.moveItem(at: old, to: new)
+            try fm.createSymbolicLink(at: old, withDestinationURL: new)
+        } catch {
+            NSLog("\(AppName.display): moving \(old.path) to \(new.path) failed: \(error)")
+        }
     }
     static var builtinDir: URL { root.appending(path: "wine/x86_64-windows") }
 
@@ -51,19 +71,19 @@ enum InstallError: LocalizedError {
         case .hookFilesMissing: "The hook files are missing. Rebuild the app with scripts/build-app.sh."
         case .crossOverMissing: "CrossOver isn't installed."
         case let .blocked(reason): reason
-        case .otherLibPath: "This bottle already sets a custom LibPath; add lsfg-metal's folder to it by hand."
+        case .otherLibPath: "This bottle already sets a custom LibPath; add \(AppName.display)'s folder to it by hand."
         }
     }
 }
 
 /// Installs and removes the hook for one game. Same steps and markers as hook/install.sh:
-/// 1. hook files in ~/Library/Application Support/lsfg-metal/wine/x86_64-windows
+/// 1. hook files in ~/Library/Application Support/Lightscale/wine/x86_64-windows
 /// 2. a marked [Wine] LibPath block in the bottle's cxbottle.conf
 /// 3. a placeholder lsfghook.dll in the bottle's system32
 /// 4. the proxy DLL next to the game's exe
 /// 5. a per-game DllOverride (<proxy> = native,builtin) in the bottle's registry
 enum HookInstaller {
-    static let libPathMarker = "lsfg-metal"
+    static let libPathMarker = "lsfg-metal"   // marks our block in cxbottle.conf; kept so existing blocks still match
 
     static func install(_ game: Game, crossOver: CrossOverInstall?) async throws {
         guard case let .ready(proxy) = game.status else {

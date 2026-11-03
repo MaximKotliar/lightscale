@@ -9,8 +9,8 @@
 // run LSFG, copy the generated frame into a second drawable. In the present hook we show
 // the generated drawable, then the real one, each half a real-frame interval apart.
 //
-// Settings come from the game's profile in ~/Library/Application Support/lsfg-metal/profiles.json
-// (written by LSFG Metal.app): {"default": {...}, "games": {"witcher3.exe": {...}}} with keys
+// Settings come from the game's profile in ~/Library/Application Support/Lightscale/profiles.json
+// (written by the app): {"default": {...}, "games": {"witcher3.exe": {...}}} with keys
 // enabled, performance, flowScale, bufferMs. Environment variables override them:
 //   LSFG_ENABLE=0        load but install no hooks
 //   LSFG_FG=0            observe only, no frame generation (default: on)
@@ -19,7 +19,7 @@
 //   LSFG_READABLE=0      leave framebufferOnly alone (disables frame generation)
 //   LSFG_MULTIPLIER=N    2 (default), 3 or 4 frames shown per real frame
 //   LSFG_BUFFER_MS=N     scheduling headroom that absorbs frame-time jitter (default 8 ms)
-//   LSFG_LOG=path        log file (default ~/Library/Logs/lsfg-metal.log)
+//   LSFG_LOG=path        log file (default ~/Library/Logs/Lightscale.log)
 
 // Metal 4 code (MTL4CommandQueue etc.) only runs when a game submits through Metal 4, which
 // itself needs macOS 26, so the availability warnings for it don't apply.
@@ -37,6 +37,17 @@
 #import <math.h>
 #import <stdatomic.h>
 
+#pragma mark - Paths
+
+// The app's data folder (working name "Lightscale"); before the rename it was lsfg-metal. The app moves it and
+// leaves a link at the old path, but a hook installed by hand may still only have the old folder.
+static NSString *appDataDir(void) {
+    NSString *base = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support"];
+    NSString *now = [base stringByAppendingPathComponent:@"Lightscale"];
+    if ([NSFileManager.defaultManager fileExistsAtPath:now]) return now;
+    return [base stringByAppendingPathComponent:@"lsfg-metal"];
+}
+
 #pragma mark - Logging
 
 static void lsfg_log(NSString *fmt, ...) NS_FORMAT_FUNCTION(1, 2);
@@ -45,7 +56,7 @@ static void lsfg_log(NSString *fmt, ...) {
     static FILE *file;
     dispatch_once(&once, ^{
         const char *path = getenv("LSFG_LOG");
-        NSString *p = path ? @(path) : [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Logs/lsfg-metal.log"];
+        NSString *p = path ? @(path) : [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Logs/Lightscale.log"];
         file = fopen(p.fileSystemRepresentation, "a");
     });
     if (!file) return;
@@ -276,7 +287,7 @@ static void applyProfile(NSDictionary *p) {
 static NSString *exePath;
 
 static NSString *profilesPath(void) {
-    return [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/lsfg-metal/profiles.json"];
+    return [appDataDir() stringByAppendingPathComponent:@"profiles.json"];
 }
 
 // The game folder's own settings: .lsfg/profile.json next to the .exe or up to 3 folders above it

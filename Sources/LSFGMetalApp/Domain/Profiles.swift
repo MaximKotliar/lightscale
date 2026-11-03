@@ -54,7 +54,7 @@ struct GameProfile: Codable, Equatable, Sendable {
     }
 }
 
-/// ~/Library/Application Support/lsfg-metal/profiles.json: a default, per-game overrides, and
+/// ~/Library/Application Support/Lightscale/profiles.json: a default, per-game overrides, and
 /// games the user added by hand (the hook only reads "default" and "games").
 struct ProfileFile: Codable, Equatable, Sendable {
     var `default` = GameProfile()

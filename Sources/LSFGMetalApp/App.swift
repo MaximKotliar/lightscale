@@ -8,6 +8,7 @@ struct LSFGMetalApp: App {
     init() {
         // Started from Terminal (swift run) the process isn't a bundled app yet: make it a regular one.
         NSApplication.shared.setActivationPolicy(.regular)
+        HookFiles.migrateLegacyFolder()   // before anything reads profiles.json
         let model = AppModel()
         // `--onboarding` shows first-launch setup again (handy for screenshots and docs).
         if CommandLine.arguments.contains("--onboarding") { model.hasCompletedSetup = false }
@@ -16,7 +17,7 @@ struct LSFGMetalApp: App {
 
     var body: some Scene {
         // One fixed-size window: no fullscreen, no zoom, nothing to stretch.
-        Window("LSFG Metal", id: "main") {
+        Window(AppName.display, id: "main") {
             ContentView(model: model)
                 .frame(width: 860, height: 560)
                 .background(FixedWindow())

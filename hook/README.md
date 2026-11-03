@@ -8,7 +8,7 @@ First result: The Witcher 3 (DX12, D3DMetal, capped at 30 fps) on an M4 Max show
 
 `DYLD_INSERT_LIBRARIES` doesn't work: CrossOver's `wineloader` uses the hardened runtime without the entitlement for it. Instead, the hook uses Wine's own way of loading builtin DLLs (the same one CrossOver uses for D3DMetal):
 
-1. **`lsfghook.dll`** is a tiny Windows DLL marked as a Wine builtin. It lives in `~/Library/Application Support/lsfg-metal/wine/x86_64-windows/`, which the bottle's `cxbottle.conf` adds to Wine's DLL search path (`[Wine] LibPath`). A placeholder copy in the bottle's `system32` makes Wine look it up there.
+1. **`lsfghook.dll`** is a tiny Windows DLL marked as a Wine builtin. It lives in `~/Library/Application Support/Lightscale/wine/x86_64-windows/`, which the bottle's `cxbottle.conf` adds to Wine's DLL search path (`[Wine] LibPath`). A placeholder copy in the bottle's `system32` makes Wine look it up there.
 2. When it loads, Wine loads its native side, **`lsfghook.so`** (x86_64 macOS code, run under Rosetta like `wineloader`), into the game process.
 3. **A proxy DLL in the game folder** triggers that: `dinput8.dll` or `version.dll`. It forwards every call to the real system DLL and also loads `lsfghook.dll`. A per-game registry override (`<proxy> = native,builtin`) makes Wine use it.
 
@@ -49,13 +49,13 @@ Cap the game at half your display's refresh rate (30 on 60 Hz, 60 on 120 Hz, or 
 
 ## Settings
 
-Each game's settings live in `.lsfg/profile.json` in the game's folder, next to the proxy DLL. The hook's PE side tells the native side the running .exe's path, and the hook looks for that file in the .exe's folder and up to 3 folders above, so launchers, renamed and helper .exes share it. `~/Library/Application Support/lsfg-metal/profiles.json` holds the default (and, from older versions, settings keyed by .exe name, used only when a game has no folder profile). LSFG Metal.app edits both. The hook checks them once a second while the game runs: on/off and the pacing buffer apply at once; multiplier, mode and motion detail rebuild the LSFG context in the background (0.05–0.2 s) and swap it in on the next frame, whose output only primes the new context:
+Each game's settings live in `.lsfg/profile.json` in the game's folder, next to the proxy DLL. The hook's PE side tells the native side the running .exe's path, and the hook looks for that file in the .exe's folder and up to 3 folders above, so launchers, renamed and helper .exes share it. `~/Library/Application Support/Lightscale/profiles.json` holds the default (and, from older versions, settings keyed by .exe name, used only when a game has no folder profile). The app edits both. The hook checks them once a second while the game runs: on/off and the pacing buffer apply at once; multiplier, mode and motion detail rebuild the LSFG context in the background (0.05–0.2 s) and swap it in on the next frame, whose output only primes the new context:
 
 ```json
 // <game folder>/.lsfg/profile.json
 { "enabled": true, "multiplier": 4, "performance": false, "flowScale": 0.75, "bufferMs": 8 }
 
-// ~/Library/Application Support/lsfg-metal/profiles.json
+// ~/Library/Application Support/Lightscale/profiles.json
 { "default": { "enabled": true, "multiplier": 2, "performance": true, "flowScale": 1.0, "bufferMs": 8 },
   "games": {}, "custom": [] }
 ```
@@ -71,7 +71,7 @@ The hook reads them when the game starts, matching on the exe name. These enviro
 | `LSFG_FLOW_SCALE` | 1.0 | Motion-estimation resolution, 0.25–1.0 |
 | `LSFG_BUFFER_MS` | 8 | Scheduling headroom: higher is smoother, lower has less lag |
 | `LSFG_TRACE=1` | off | Per-frame timing for the first frames |
-| `LSFG_LOG` | `~/Library/Logs/lsfg-metal.log` | Log file; every second it records presents, generated frames, on-screen fps, frame-time spread and drops; every 10 s the process's memory footprint |
+| `LSFG_LOG` | `~/Library/Logs/Lightscale.log` | Log file; every second it records presents, generated frames, on-screen fps, frame-time spread and drops; every 10 s the process's memory footprint |
 
 ## Limits
 

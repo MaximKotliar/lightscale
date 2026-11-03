@@ -127,23 +127,24 @@ private struct UpscalerCard: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
             }
-            SettingRow(title: "NSS quality", caption: "Mid is the best trade. High costs about 3× as much.") {
-                Picker("NSS quality", selection: profile.nssQuality) {
-                    Text("Low").tag("low")
-                    Text("Mid").tag("mid")
-                    Text("High").tag("high")
+            if nss {
+                SettingRow(title: "NSS quality", caption: "Mid is the best trade. High costs about 3× as much.") {
+                    Picker("NSS quality", selection: profile.nssQuality) {
+                        Text("Low").tag("low")
+                        Text("Mid").tag("mid")
+                        Text("High").tag("high")
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
             }
-            .disabled(!nss)
         }
     }
 
     private func caption(nss: Bool, ready: Bool) -> String {
         if !nss { return "Pick DLSS in the game. D3DMetal upscales it with MetalFX." }
         if !ready { return "NSS files aren't installed (\(NSSFiles.directory.path))." }
-        return "Pick DLSS in the game; NSS replaces MetalFX. Sharper, about 1.5–2.5 ms more GPU time per frame."
+        return "Pick DLSS in the game; NSS replaces MetalFX: a sharper, more stable image at about the same GPU cost (Mid)."
     }
 }
 

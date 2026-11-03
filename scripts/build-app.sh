@@ -1,10 +1,12 @@
 #!/bin/bash
-# Builds "LSFG Metal.app": the setup app plus the CrossOver hook files it installs.
-#   scripts/build-app.sh            -> build/LSFG Metal.app
+# Builds the app ("Lightscale.app", a working name): the setup app plus the CrossOver hook files it installs.
+#   scripts/build-app.sh            -> build/Lightscale.app
 # Needs: Xcode, Homebrew llvm + lld (for the hook's Windows DLLs). See hook/build.sh.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-APP="$ROOT/build/LSFG Metal.app"
+NAME=Lightscale BUNDLE_ID=dev.lightscale.app   # the name also lives in Sources/LSFGMetalApp/AppName.swift
+APP="$ROOT/build/$NAME.app"
+rm -rf "$ROOT/build/LSFG Metal.app"   # this build under its old name
 
 "$ROOT/hook/build.sh" >/dev/null
 # Pre-baked kernels (no weights inside) from this Mac's Lossless.dll, if there is one.
@@ -15,12 +17,12 @@ else
     rm -rf "$ROOT/hook/build/baked"
     echo "no Lossless.dll or spirv-cross here: building without pre-baked kernels (the app translates on first run)"
 fi
-swift build --package-path "$ROOT" -c release --product LSFGMetal >/dev/null
-BIN=$(swift build --package-path "$ROOT" -c release --product LSFGMetal --show-bin-path)
+swift build --package-path "$ROOT" -c release --product "$NAME" >/dev/null
+BIN=$(swift build --package-path "$ROOT" -c release --product "$NAME" --show-bin-path)
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/Hook"
-cp "$BIN/LSFGMetal" "$APP/Contents/MacOS/LSFGMetal"
+cp "$BIN/$NAME" "$APP/Contents/MacOS/$NAME"
 for f in lsfghook.dll lsfghook.so lsfghook.placeholder.dll liblsfgbridge.dylib dinput8.dll version.dll; do
     cp "$ROOT/hook/build/$f" "$APP/Contents/Resources/Hook/"
 done
@@ -64,10 +66,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>LSFG Metal</string>
-    <key>CFBundleDisplayName</key><string>LSFG Metal</string>
-    <key>CFBundleIdentifier</key><string>dev.lsfg-metal.setup</string>
-    <key>CFBundleExecutable</key><string>LSFGMetal</string>
+    <key>CFBundleName</key><string>$NAME</string>
+    <key>CFBundleDisplayName</key><string>$NAME</string>
+    <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
+    <key>CFBundleExecutable</key><string>$NAME</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundleShortVersionString</key><string>0.1</string>

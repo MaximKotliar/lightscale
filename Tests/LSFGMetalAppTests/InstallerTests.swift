@@ -117,7 +117,7 @@ import Testing
     #expect(loaded?.enabled == false && loaded?.multiplier == 4)
     // The hook reads these keys.
     let json = try JSONSerialization.jsonObject(with: Data(contentsOf: GameFolderProfile.url(for: game))) as? [String: Any]
-    #expect(Set(json?.keys.map { $0 } ?? []) == ["enabled", "multiplier", "performance", "flowScale", "bufferMs"])
+    #expect(Set(json?.keys.map { $0 } ?? []) == ["enabled", "multiplier", "performance", "flowScale", "bufferMs", "upscaler", "nssQuality"])
     GameFolderProfile.remove(for: game)
     #expect(!FileManager.default.fileExists(atPath: folder.appending(path: ".lsfg").path))
 }

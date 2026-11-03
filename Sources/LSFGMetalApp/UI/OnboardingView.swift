@@ -24,7 +24,7 @@ struct OnboardingView: View {
                     .font(.system(size: 32))
                     .foregroundStyle(.tint)
                     .symbolRenderingMode(.hierarchical)
-                Text("LSFG Metal").font(.title.weight(.bold))
+                Text(AppName.display).font(.title.weight(.bold))
                 Text("Smoother Windows games in CrossOver, using frame generation from your own copy of Lossless Scaling.")
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
