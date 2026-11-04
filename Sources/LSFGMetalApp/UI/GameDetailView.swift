@@ -388,6 +388,34 @@ struct NSSTermsButton: View {
     }
 }
 
+/// An ⓘ that shows `text`: as a tooltip on hover, or in a popover on click. Brightens while the pointer is over it.
+private struct InfoButton: View {
+    let text: String
+    @State private var hovering = false
+    @State private var shown = false
+
+    var body: some View {
+        Button { shown.toggle() } label: {
+            Image(systemName: hovering || shown ? "info.circle.fill" : "info.circle")
+                .font(.callout)
+                .foregroundStyle(hovering || shown ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.tertiary))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(text)
+        .accessibilityLabel("More info")
+        .accessibilityHint(text)
+        .popover(isPresented: $shown, arrowEdge: .bottom) {
+            Text(text)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(width: 280, alignment: .leading)
+                .padding(12)
+        }
+    }
+}
+
 private struct SettingRow<Control: View>: View {
     let title: String
     var caption: String? = nil
@@ -400,13 +428,7 @@ private struct SettingRow<Control: View>: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
                     Text(title)
-                    if let caption, !warn {
-                        Image(systemName: "info.circle")
-                            .font(.callout)
-                            .foregroundStyle(.tertiary)
-                            .help(caption)
-                            .accessibilityLabel(caption)
-                    }
+                    if let caption, !warn { InfoButton(text: caption) }
                 }
                 if let caption, warn {
                     Text(caption)
