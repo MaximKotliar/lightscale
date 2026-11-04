@@ -566,6 +566,31 @@ static CGFloat screenScaleOf(CALayer *layer) {
     return NSScreen.mainScreen ? NSScreen.mainScreen.backingScaleFactor : 1;
 }
 
+// The game can swap to a new layer mid-session (D3DMetal does when the swapchain is recreated, e.g. when the game's
+// own frame generation is switched on). The overlay must sit on the layer the frames come from, or it shows nothing
+// while the game's presents are held back for it: move it there (main thread). True if it's already there.
+static _Atomic bool overlayMoving;
+static BOOL overlayOnGameLayer(void) {
+    CAMetalLayer *o = overlay, *game = fgLayer;
+    if (!o || !game || o.superlayer == game) return YES;
+    if (atomic_exchange(&overlayMoving, true)) return NO;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        CAMetalLayer *g = fgLayer;
+        if (g && o.superlayer != g) {
+            [CATransaction begin];
+            [CATransaction setDisableActions:YES];
+            [o removeFromSuperlayer];
+            o.frame = g.bounds;
+            [g addSublayer:o];
+            [CATransaction commit];
+            lsfg_log(@"game switched to a new layer (%@ %p): overlay moved to it", NSStringFromClass([g class]), (__bridge void *)g);
+            updateScaler();
+        }
+        atomic_store(&overlayMoving, false);
+    });
+    return NO;
+}
+
 // Sizes the overlay for the current scaling setting and builds the upscaler for it (main thread). With scaling on,
 // the overlay's drawable has the window's real pixel size and the game's frames are upscaled into it; otherwise it
 // has the frames' own size.
@@ -879,6 +904,7 @@ static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, void (^targ
     }
     int ov = atomic_load(&overlayState);
     if (ov == 0) attachOverlay(fgLayer);
+    if (ov == 2 && !overlayOnGameLayer()) ov = 1;   // being moved: the game presents itself meanwhile
     // Until the overlay is ready the game keeps presenting itself. A fresh context (or frame
     // generation just switched back on) has no history yet: its first frame only primes it, and
     // the game presents that one itself too.
