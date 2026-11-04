@@ -1,5 +1,4 @@
 import AppKit
-import Charts
 import SwiftUI
 
 struct GameDetailView: View {
@@ -15,9 +14,9 @@ struct GameDetailView: View {
                     Label(blockedExplanation(reason), systemImage: "info.circle")
                         .foregroundStyle(.secondary)
                 } else {
-                    if let live = model.liveStats(for: game) { LiveCard(live: live) }
                     ProfileCard(game: game, model: model)
                     UpscalerCard(game: game, model: model)
+                    HUDCard(game: game, model: model)
                     if model.status.crossOver != nil { GPTKCard(game: game, model: model) }
                 }
             }
@@ -108,8 +107,9 @@ private struct ProfileCard: View {
     }
 }
 
-/// How the game is upscaled, one choice: its own DLSS (D3DMetal turns it into MetalFX, or NSS takes MetalFX's place),
-/// or Lossless Scaling's upscalers, which scale the finished frames up to the window in any game.
+/// Two independent settings that can stack:
+/// - DLSS Replacement: what runs in place of the game's DLSS (D3DMetal's MetalFX, or NSS). Needs a game with DLSS.
+/// - Display Scaling: Lossless Scaling's upscalers scale the finished frames (generated ones too) up to the screen. Any game.
 private struct UpscalerCard: View {
     let game: Game
     let model: AppModel
@@ -121,65 +121,54 @@ private struct UpscalerCard: View {
     static let scalers: [(tag: String, name: String)] = [("ls1", "LS1"), ("fsr", "FSR"), ("bcas", "BCAS"),
                                                           ("bicubic", "Bicubic"), ("nearest", "Nearest")]
 
-    /// The one choice, stored as the hook's two settings (upscaler for DLSS, scaler for window scaling).
-    private var method: Binding<String> {
-        Binding(get: {
-            let p = model.profile(for: game)
-            if p.scaler != "off" { return p.scaler }
-            return p.upscaler == "nss" ? "nss" : "metalfx"
-        }, set: { value in
-            var p = model.profile(for: game)
-            switch value {
-            case "metalfx", "nss": p.upscaler = value; p.scaler = "off"
-            default: p.upscaler = "metalfx"; p.scaler = value
-            }
-            model.setProfile(p, for: game)
-        })
-    }
-
     var body: some View {
         let dlss = game.upscalers.contains(.dlss)
-        let m = method.wrappedValue
+        let p = profile.wrappedValue
         let ready = NSSFiles.isReady
         Card(title: "Upscaling") {
-            if dlss && !game.bottle.dlssEnabled && (m == "metalfx" || m == "nss") {
-                Label("DLSS is off in the “\(game.bottle.name)” bottle, so the game can't offer it. Turn on DLSS in the bottle's settings in CrossOver, then restart the game.",
-                      systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout)
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            SettingRow(title: "Upscaler", caption: caption(m, dlss: dlss, ready: ready), warn: m == "nss" && !ready) {
-                Picker("Upscaler", selection: method) {
-                    Section("Game's DLSS") {
-                        Text(dlss ? "MetalFX" : "Off").tag("metalfx")
-                        if dlss { Text("NSS").tag("nss") }
-                    }
-                    Section("Scale to window") {
-                        ForEach(Self.scalers, id: \.tag) { Text($0.name).tag($0.tag) }
-                    }
+            if dlss {
+                if !game.bottle.dlssEnabled {
+                    Label("DLSS is off in the “\(game.bottle.name)” bottle, so the game can't offer it. Turn on DLSS in the bottle's settings in CrossOver, then restart the game.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .labelsHidden()
-                .frame(width: 160)
-            }
-            if !dlss && (m == "metalfx" || m == "nss") { NoDLSSNote(game: game) }
-            if m == "nss" {
-                SettingRow(title: "NSS quality", caption: "Fast: about ⅔ of Mid's GPU time, as sharp in motion, fine detail in still scenes like MetalFX. High costs about 3× Mid.") {
-                    Picker("NSS quality", selection: profile.nssQuality) {
-                        if profile.wrappedValue.nssQuality == "low" { Text("Low").tag("low") }
-                        Text("Fast").tag("fast")
-                        Text("Mid").tag("mid")
-                        Text("High").tag("high")
+                SettingRow(title: "DLSS Replacement", caption: replacementCaption(p.upscaler, ready: ready), warn: p.upscaler == "nss" && !ready) {
+                    Picker("DLSS Replacement", selection: profile.upscaler) {
+                        Text("MetalFX").tag("metalfx")
+                        Text("NSS").tag("nss")
                     }
-                    .pickerStyle(.segmented)
                     .labelsHidden()
                 }
-                NSSTermsNote()
+                if p.upscaler == "nss" {
+                    SettingRow(title: "NSS quality", caption: "Fast: about ⅔ of Mid's GPU time, as sharp in motion, fine detail in still scenes like MetalFX. High costs about 3× Mid.") {
+                        Picker("NSS quality", selection: profile.nssQuality) {
+                            if p.nssQuality == "low" { Text("Low").tag("low") }
+                            Text("Fast").tag("fast")
+                            Text("Mid").tag("mid")
+                            Text("High").tag("high")
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                    }
+                    NSSTermsNote()
+                }
+            } else {
+                NoDLSSNote(game: game)
             }
-            if ["ls1", "fsr", "bcas"].contains(m) {
+            Divider()
+            SettingRow(title: "Display Scaling", caption: scalingCaption(p.scaler)) {
+                Picker("Display Scaling", selection: profile.scaler) {
+                    Text("Off").tag("off")
+                    ForEach(Self.scalers, id: \.tag) { Text($0.name).tag($0.tag) }
+                }
+                .labelsHidden()
+            }
+            if ["ls1", "fsr", "bcas"].contains(p.scaler) {
                 SliderRow(title: "Sharpness", value: profile.scalerSharpness, range: 0...1, step: 0.25) { "\(Int(($0 * 100).rounded()))%" }
             }
-            if m == "ls1" {
+            if p.scaler == "ls1" {
                 SettingRow(title: "Performance", caption: "LS1's single-pass variant: about half the GPU time, a little less detail.") {
                     Toggle("Performance", isOn: profile.scalerPerformance).labelsHidden()
                 }
@@ -187,18 +176,39 @@ private struct UpscalerCard: View {
         }
     }
 
-    private func caption(_ m: String, dlss: Bool, ready: Bool) -> String {
-        switch m {
-        case "metalfx":
-            return dlss ? "Pick DLSS in the game. D3DMetal upscales it with MetalFX." : "The game renders at the resolution you set in it."
-        case "nss":
+    private func replacementCaption(_ upscaler: String, ready: Bool) -> String {
+        if upscaler == "nss" {
             if !ready { return "NSS files aren't installed yet: uninstall and install the game again." }
-            return "Pick DLSS in the game; NSS replaces MetalFX: a sharper, more stable image at about the same GPU cost (Mid)."
-        default:
-            let what = ["ls1": "Lossless Scaling's own trained upscaler", "fsr": "AMD FSR 1",
-                        "bcas": "bicubic with AMD's contrast-adaptive sharpening", "bicubic": "plain bicubic",
-                        "nearest": "nearest neighbour (sharp pixels; integer scaling at whole ratios)"][m] ?? m
-            return "Set the game to a lower resolution: its frames are scaled up to the window with \(what). Works in any game; uses your Lossless Scaling."
+            return "Runs instead of the game's DLSS. Enable DLSS in the game's graphics settings. NSS: a sharper, more stable image than MetalFX at about the same GPU cost (Mid)."
+        }
+        return "Runs instead of the game's DLSS. Enable DLSS in the game's graphics settings."
+    }
+
+    private func scalingCaption(_ scaler: String) -> String {
+        guard scaler != "off" else { return "Scales the finished image up to your screen's resolution. Works in any game and stacks with the setting above." }
+        let what = ["ls1": "Lossless Scaling's own trained upscaler", "fsr": "AMD FSR 1",
+                    "bcas": "bicubic with AMD's contrast-adaptive sharpening", "bicubic": "plain bicubic",
+                    "nearest": "nearest neighbour (sharp pixels; integer scaling at whole ratios)"][scaler] ?? scaler
+        return "Scales the finished image up to your screen's resolution with \(what). Works in any game and stacks with the setting above. Uses your Lossless Scaling."
+    }
+}
+
+/// Lightscale's own HUD, drawn by the hook on the final image of every frame on screen, so the numbers are
+/// visible while playing and are never interpolated or scaled.
+private struct HUDCard: View {
+    let game: Game
+    let model: AppModel
+
+    var body: some View {
+        Card(title: "Performance HUD") {
+            SettingRow(title: "Show in game", caption: "In the game's top-right corner: fps on screen and the game's own, frame pacing, and where an average frame's GPU time goes (game, DLSS replacement, frame generation, display scaling) against its time budget. Averaged over 30 seconds, restarted when a setting changes.") {
+                Toggle("Show in game", isOn: Binding(get: { model.profile(for: game).hud }, set: { on in
+                    var p = model.profile(for: game)
+                    p.hud = on
+                    model.setProfile(p, for: game)
+                }))
+                .labelsHidden()
+            }
         }
     }
 }
@@ -338,7 +348,7 @@ private struct NoDLSSNote: View {
         VStack(alignment: .leading, spacing: 6) {
             Label("This game doesn't use DLSS, so NSS and MetalFX have nothing to take over.", systemImage: "info.circle")
             if others.isEmpty {
-                Text("NSS and MetalFX need a game with DLSS. Pick one of the “Scale to window” upscalers instead: they work in any game.")
+                Text("NSS and MetalFX need a game with DLSS. Use Display Scaling instead: it works in any game.")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
                 Text("It ships \(others.joined(separator: " and ")). A mod such as OptiScaler can route the game's \(others.joined(separator: " or ")) through DLSS, which would make NSS possible here; that route isn't supported yet.")
@@ -384,65 +394,29 @@ private struct SettingRow<Control: View>: View {
     var warn = false
     @ViewBuilder let control: Control
 
+    /// The caption stays out of the way behind an ⓘ next to the title (hover to read it); a warning is always shown.
     var body: some View {
-        HStack(alignment: caption == nil ? .center : .top, spacing: 16) {
+        HStack(alignment: warn && caption != nil ? .top : .center, spacing: 16) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                if let caption {
+                HStack(spacing: 5) {
+                    Text(title)
+                    if let caption, !warn {
+                        Image(systemName: "info.circle")
+                            .font(.callout)
+                            .foregroundStyle(.tertiary)
+                            .help(caption)
+                            .accessibilityLabel(caption)
+                    }
+                }
+                if let caption, warn {
                     Text(caption)
                         .font(.caption)
-                        .foregroundStyle(warn ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                        .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
             Spacer(minLength: 0)
             control.frame(width: 280)
-        }
-    }
-}
-
-private struct LiveCard: View {
-    let live: LiveStats.Snapshot
-
-    var body: some View {
-        let latest = live.samples.last
-        Card(title: "Now Playing") {
-            HStack(alignment: .firstTextBaseline, spacing: 22) {
-                Stat(value: latest.map { "\($0.realFPS)" } ?? "–", unit: "game fps")
-                Image(systemName: "arrow.right").foregroundStyle(.tertiary)
-                Stat(value: latest?.shownFPS.map(String.init) ?? "–", unit: "on screen", accent: true)
-                Spacer()
-                Stat(value: latest?.frameTimeMs.map { String(format: "%.1f", $0) } ?? "–",
-                     unit: latest?.spreadMs.map { String(format: "ms ±%.1f", $0) } ?? "ms")
-            }
-            if let last = latest {
-                Chart(live.samples) { s in
-                    LineMark(x: .value("t", s.time - last.time), y: .value("fps", s.shownFPS ?? 0))
-                        .foregroundStyle(Color.accentColor)
-                    LineMark(x: .value("t", s.time - last.time), y: .value("fps", s.realFPS), series: .value("s", "game"))
-                        .foregroundStyle(.secondary)
-                }
-                .chartXScale(domain: -60...0)
-                .chartXAxis(.hidden)
-                .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) }
-                .frame(height: 90)
-            }
-        }
-    }
-}
-
-private struct Stat: View {
-    let value: String
-    let unit: String
-    var accent = false
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 4) {
-            Text(value)
-                .font(.system(size: 28, weight: .semibold, design: .rounded))
-                .monospacedDigit()
-                .foregroundStyle(accent ? Color.accentColor : .primary)
-            Text(unit).font(.callout).foregroundStyle(.secondary)
         }
     }
 }

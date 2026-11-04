@@ -7,3 +7,6 @@
 [submodule "vendor/lss-metal"]
 	path = vendor/lss-metal
 	url = https://github.com/MaximKotliar/lss-metal.git
+[submodule "vendor/imgui"]
+	path = vendor/imgui
+	url = https://github.com/ocornut/imgui.git

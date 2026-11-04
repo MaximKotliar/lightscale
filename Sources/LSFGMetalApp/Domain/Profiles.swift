@@ -24,10 +24,12 @@ struct GameProfile: Codable, Equatable, Sendable {
     var scalerSharpness = 0.5
     /// LS1's single-pass variant: about half the GPU time.
     var scalerPerformance = false
+    /// Lightscale's performance HUD in the game (fps, frame times, GPU time of each stage, latency, power).
+    var hud = false
 
     init(enabled: Bool = true, multiplier: Int = 2, performance: Bool = true, flowScale: Double = 1.0, bufferMs: Double = 8.0, gptk: String? = nil,
          upscaler: String = "metalfx", nssQuality: String = "mid", scaler: String = "off", scalerSharpness: Double = 0.5,
-         scalerPerformance: Bool = false) {
+         scalerPerformance: Bool = false, hud: Bool = false) {
         self.enabled = enabled
         self.multiplier = multiplier
         self.performance = performance
@@ -39,6 +41,7 @@ struct GameProfile: Codable, Equatable, Sendable {
         self.scaler = scaler
         self.scalerSharpness = scalerSharpness
         self.scalerPerformance = scalerPerformance
+        self.hud = hud
     }
 
     // Missing keys (older files) fall back to defaults instead of discarding the profile.
@@ -56,6 +59,7 @@ struct GameProfile: Codable, Equatable, Sendable {
         scaler = try c.decodeIfPresent(String.self, forKey: .scaler) ?? d.scaler
         scalerSharpness = try c.decodeIfPresent(Double.self, forKey: .scalerSharpness) ?? d.scalerSharpness
         scalerPerformance = try c.decodeIfPresent(Bool.self, forKey: .scalerPerformance) ?? d.scalerPerformance
+        hud = try c.decodeIfPresent(Bool.self, forKey: .hud) ?? d.hud
     }
 
     /// Off / 2x / 4x as one value (0, 1, 2) for the slider.

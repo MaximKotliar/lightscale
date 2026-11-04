@@ -40,10 +40,20 @@ printf 'Wine placeholder DLL\0' | dd of="$OUT/lsfghook.placeholder.dll" bs=1 see
 
 # NSS upscaler: the NSSMetal library from vendor/nss-metal, compiled into the hook, and its kernels.
 NSS=${NSS_METAL:-../vendor/nss-metal}
+# In-game HUD: Dear ImGui (vendor/imgui, MIT) and its Metal backend, compiled in as C++.
+IMGUI=${IMGUI:-../vendor/imgui}
+HUD_SRC=(unix/lsfg_hud.mm "$IMGUI/backends/imgui_impl_metal.mm" "$IMGUI/imgui.cpp" "$IMGUI/imgui_draw.cpp"
+         "$IMGUI/imgui_tables.cpp" "$IMGUI/imgui_widgets.cpp")
+HUD_OBJ=()
+for src in "${HUD_SRC[@]}"; do
+    obj="$OUT/obj/$(basename "$src").o"
+    clang++ -arch x86_64 -std=c++17 -O2 -fobjc-arc -mmacosx-version-min=14.0 -I"$IMGUI" -c "$src" -o "$obj"
+    HUD_OBJ+=("$obj")
+done
 clang -arch x86_64 -dynamiclib -O2 -Wall -fobjc-arc -mmacosx-version-min=14.0 -Wno-unguarded-availability-new \
     -I"$NSS/Sources/NSSMetal/include" \
-    -framework AppKit -framework Foundation -framework Metal -framework MetalFX -framework QuartzCore \
-    -o "$OUT/lsfghook.so" unix/lsfghook_unix.m "$NSS/Sources/NSSMetal/NSSUpscaler.m"
+    -framework AppKit -framework Foundation -framework Metal -framework MetalFX -framework QuartzCore -framework IOKit -lc++ \
+    -o "$OUT/lsfghook.so" unix/lsfghook_unix.m "$NSS/Sources/NSSMetal/NSSUpscaler.m" "${HUD_OBJ[@]}"
 "$NSS/scripts/build-metallib.sh" "$OUT/nss.metallib"
 # Arm's NSS weights with their license, notices and acceptable-use terms (the app installs them next to the kernels)
 rm -rf "$OUT/NSSWeights" && cp -R "$NSS/Sources/NSSMetal/Weights" "$OUT/NSSWeights"

@@ -150,7 +150,11 @@ static void tsCollect(int slot) {
         const MTL4TimestampHeapEntry *t = d.bytes;
         if (!t[0].timestamp || t[1].timestamp <= t[0].timestamp) return;
         const double ms = (double)(t[1].timestamp - t[0].timestamp) / tsTicksPerMs;
-        if (ms > 0 && ms < 100) [tsSamples[tsKind[slot]] addObject:@(ms)];
+        if (ms > 0 && ms < 100) {
+            [tsSamples[tsKind[slot]] addObject:@(ms)];
+            atomic_fetch_add(&totalUpscaleNs, (long)(ms * 1e6));
+            atomic_fetch_add(&totalUpscaleFrames, 1);
+        }
         [(id<MTL4CounterHeap>)tsHeap invalidateCounterRange:NSMakeRange(2 * slot, 2)];
     }
 }
@@ -192,11 +196,13 @@ static void tsAfter(id cbObj, int slot, BOOL nss) {
 static NSString *nssStatsLine(void) {
     NSMutableString *out = [NSMutableString string];
     os_unfair_lock_lock(&tsLock);
+    hudUpscaleKind = -1;
     for (int k = 0; k < 2; k++) {
         NSMutableArray<NSNumber *> *v = tsSamples[k];
         if (!v.count) continue;
         [v sortUsingSelector:@selector(compare:)];
         const double med = v[v.count / 2].doubleValue, p95 = v[MIN(v.count - 1, (NSUInteger)(v.count * 0.95))].doubleValue;
+        hudUpscaleKind = k; hudUpscaleMs = med;
         const char *q = config.nssQuality == 0 ? "low" : config.nssQuality == 2 ? "high" : config.nssQuality == 3 ? "fast" : "mid";
         [out appendFormat:@" | upscale GPU %s%s%s %.2f ms (p95 %.2f, %lu frames)", k ? "NSS" : "MetalFX", k ? " " : "", k ? q : "",
                           med, p95, (unsigned long)v.count];

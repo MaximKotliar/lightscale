@@ -25,6 +25,7 @@
 // itself needs macOS 26, so the availability warnings for it don't apply.
 #pragma clang diagnostic ignored "-Wunguarded-availability-new"
 #import <AppKit/AppKit.h>
+#import "lsfg_hud.h"
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/QuartzCore.h>
@@ -222,14 +223,18 @@ static _Atomic int overlayState;          // 0 none, 1 attaching, 2 ready, -1 of
 // Per-second timing (microseconds), logged as a "timing:" line.
 // Total GPU busy time of the game's command buffers (overlapping spans counted once).
 static os_unfair_lock busyLock = OS_UNFAIR_LOCK_INIT;
-static double busyEnd, busySeconds;
+static double busyEnd, busySeconds, busyTotal;   // busyTotal: since the start, for the HUD
 static void addGpuSpan(CFTimeInterval start, CFTimeInterval end) {
     if (end <= start) return;
     os_unfair_lock_lock(&busyLock);
-    if (end > busyEnd) { busySeconds += end - MAX(start, busyEnd); busyEnd = end; }
+    if (end > busyEnd) { busySeconds += end - MAX(start, busyEnd); busyTotal += end - MAX(start, busyEnd); busyEnd = end; }
     os_unfair_lock_unlock(&busyLock);
 }
 static _Atomic long slotWaitUs, frameGpuUs, frameGpuCount, linkGpuUs, linkGpuCount, queueAheadUs, queueAheadCount;
+// Running totals for the HUD's frame-cost graph (nanoseconds), never reset.
+static _Atomic long totalSettingsChanges;
+static _Atomic long totalGameFrames, totalLsfgNs, totalLsfgFrames, totalUpscaleNs, totalUpscaleFrames, totalDisplayNs;
+void lsfgHudReadTotals(LSFGHudTotals *t);
 
 // A slot is taken when the game submits a frame and freed once that frame has been shown, which
 // can be ~100 ms later (games submit 2-3 frames ahead of the GPU, then LSFG, queueing, display).
@@ -258,6 +263,7 @@ static void trackPresented(id<CAMetalDrawable> d) {
             if (lastShown > 0 && t > lastShown && t - lastShown < 0.25) {
                 double dt = (t - lastShown) * 1000;
                 shownCount++; shownSum += dt; shownSumSq += dt * dt; shownMax = MAX(shownMax, dt);
+                lsfgHudScreenFrame((float)dt);
             }
             lastShown = t;
         }
@@ -271,7 +277,7 @@ static void trackPresented(id<CAMetalDrawable> d) {
 // the overlay then shows the game's frames scaled to the window. scalerSharpness 0-1, scalerPerformance: LS1's
 // single-pass variant.
 static struct { BOOL enabled, performance; int multiplier; float flowScale, bufferMs; int upscaler, nssQuality;
-                int scaler; float scalerSharpness; BOOL scalerPerformance; } config = { YES, YES, 2, 1.0f, 8.0f, 0, 1, 0, 0.5f, NO };
+                int scaler; float scalerSharpness; BOOL scalerPerformance; BOOL hud; } config = { YES, YES, 2, 1.0f, 8.0f, 0, 1, 0, 0.5f, NO, NO };
 static int scalerMode(NSString *s) {
     NSArray *names = @[@"off", @"ls1", @"fsr", @"bcas", @"bicubic", @"nearest"];
     NSUInteger i = [names indexOfObject:s.lowercaseString];
@@ -293,6 +299,7 @@ static void applyProfile(NSDictionary *p) {
     if ([p[@"scaler"] isKindOfClass:NSString.class]) config.scaler = scalerMode(p[@"scaler"]);
     if ([p[@"scalerSharpness"] isKindOfClass:NSNumber.class]) config.scalerSharpness = [p[@"scalerSharpness"] floatValue];
     if ([p[@"scalerPerformance"] isKindOfClass:NSNumber.class]) config.scalerPerformance = [p[@"scalerPerformance"] boolValue];
+    if ([p[@"hud"] isKindOfClass:NSNumber.class]) config.hud = [p[@"hud"] boolValue];
 }
 
 // The running .exe as a Unix path, sent by the PE side when it loads (nil until then).
@@ -316,7 +323,7 @@ static NSString *gameProfilePath(void) {
 static void loadConfig(void) {
     config.enabled = YES; config.performance = YES; config.multiplier = 2;
     config.flowScale = 1.0f; config.bufferMs = 8.0f; config.upscaler = 0; config.nssQuality = 1;
-    config.scaler = 0; config.scalerSharpness = 0.5f; config.scalerPerformance = NO;
+    config.scaler = 0; config.scalerSharpness = 0.5f; config.scalerPerformance = NO; config.hud = NO;
     NSData *data = [NSData dataWithContentsOfFile:profilesPath()];
     NSDictionary *root = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
     NSString *exe = (exePath.lastPathComponent ?: NSProcessInfo.processInfo.processName).lowercaseString;
@@ -333,7 +340,7 @@ static void loadConfig(void) {
     static dispatch_once_t warned;
     dispatch_once(&warned, ^{
         NSMutableArray *set = [NSMutableArray array];
-        for (NSString *name in @[@"LSFG_FG", @"LSFG_PERFORMANCE", @"LSFG_FLOW_SCALE", @"LSFG_BUFFER_MS", @"LSFG_MULTIPLIER", @"LSFG_UPSCALER", @"LSFG_NSS_QUALITY", @"LSFG_SCALER", @"LSFG_SCALER_SHARPNESS"])
+        for (NSString *name in @[@"LSFG_FG", @"LSFG_PERFORMANCE", @"LSFG_FLOW_SCALE", @"LSFG_BUFFER_MS", @"LSFG_MULTIPLIER", @"LSFG_UPSCALER", @"LSFG_NSS_QUALITY", @"LSFG_SCALER", @"LSFG_SCALER_SHARPNESS", @"LSFG_HUD"])
             if (getenv(name.UTF8String)) [set addObject:name];
         if (set.count) lsfg_log(@"environment overrides the profile (the app can't change these): %@", [set componentsJoinedByString:@", "]);
     });
@@ -347,6 +354,7 @@ static void loadConfig(void) {
     if ((v = getenv("LSFG_NSS_QUALITY"))) config.nssQuality = strcmp(v, "low") == 0 ? 0 : strcmp(v, "high") == 0 ? 2 : strcmp(v, "fast") == 0 ? 3 : 1;
     if ((v = getenv("LSFG_SCALER"))) config.scaler = scalerMode(@(v));
     if ((v = getenv("LSFG_SCALER_SHARPNESS"))) config.scalerSharpness = (float)atof(v);
+    if ((v = getenv("LSFG_HUD"))) config.hud = v[0] != '0';
     config.scalerSharpness = fminf(fmaxf(config.scalerSharpness, 0.0f), 1.0f);
     config.multiplier = MAX(2, MIN(config.multiplier, kMaxGenerated + 1));
     config.flowScale = fminf(fmaxf(config.flowScale, 0.25f), 1.0f);
@@ -370,6 +378,7 @@ static BOOL traceOn(void);
 static void applyConfigChanges(void) {
     typeof(config) before = config;
     loadConfig();
+    if (memcmp(&before, &config, sizeof config) != 0) atomic_fetch_add(&totalSettingsChanges, 1);
     if (config.enabled != before.enabled) {
         atomic_store(&fgOn, config.enabled);
         lsfg_log(@"frame generation switched %s", config.enabled ? "on" : "off");
@@ -379,6 +388,7 @@ static void applyConfigChanges(void) {
     if (config.scaler != before.scaler || config.scalerSharpness != before.scalerSharpness ||
         config.scalerPerformance != before.scalerPerformance)
         dispatch_async(dispatch_get_main_queue(), ^{ updateScaler(); });
+    if (config.hud != before.hud) lsfg_log(@"performance HUD %s", config.hud ? "on" : "off");
 }
 
 // Called once a second: reloads when profiles.json or the game folder's profile changes (or
@@ -443,6 +453,10 @@ typedef struct { void *ctx; int inW, inH, outW, outH, outX, outY, canvasW, canva
 static ScaleCtx *_Atomic scaleCurrent;
 static _Atomic bool scaleUpdateQueued;   // an updateScaler is queued or its upscaler is still being built
 static BOOL scalerWanted(void) { return scaleAvailable && config.scaler != 0; }
+// The overlay is needed even without frame generation: to scale the game's frames, or to draw the HUD on them.
+static BOOL overlayWanted(void) { return scalerWanted() || (fgAvailable && config.hud); }
+// The overlay's width in points (main thread writes it), for the HUD's pixels per point.
+static _Atomic double overlayPointsWide;
 
 // Ring textures for the frames being shown. Rings only grow (a later 2x → 4x reuses them).
 static void allocateRings(id<MTLDevice> device, NSUInteger w, NSUInteger h, MTLPixelFormat format, int multiplier) {
@@ -614,6 +628,7 @@ static void updateScaler(void) {
     if (o.contentsScale != layerScale) o.contentsScale = layerScale;
     if (!CGSizeEqualToSize(o.drawableSize, canvas)) o.drawableSize = canvas;
     [CATransaction commit];
+    atomic_store(&overlayPointsWide, o.bounds.size.width);
     const int mode = config.scaler, perf = config.scalerPerformance;
     const float sharpness = config.scalerSharpness;
     id<MTLDevice> device = fgDevice;
@@ -686,7 +701,7 @@ static double effectiveRefresh(void) {
 
 // Frame generation stepped aside because the game runs too fast for generated frames (fgShouldRun).
 static _Atomic bool fgSteppedAside;
-static BOOL fgShowing(void) { return (atomic_load(&fgOn) && !atomic_load(&fgSteppedAside)) || scalerWanted(); }
+static BOOL fgShowing(void) { return (atomic_load(&fgOn) && !atomic_load(&fgSteppedAside)) || overlayWanted(); }
 static BOOL fgRunLSFG;   // this frame: frame generation runs (otherwise frames are only captured, for scaling)
 
 // Display times follow a steady cadence: each frame continues from the previous real frame's
@@ -804,6 +819,13 @@ static void presentSlot(int slot, int generated, CFTimeInterval completedAt) {
         [blit copyFromTexture:frame toTexture:dst];
         [blit endEncoding];
     }
+    if (config.hud) {
+        const double points = atomic_load(&overlayPointsWide);
+        const float pixelsPerPoint = points > 0 ? (float)(dst.width / points) : 1.0f;
+        static bool logged;
+        if (!logged) { logged = true; lsfg_log(@"HUD: drawing on %lux%lu at %.2f px/pt", (unsigned long)dst.width, (unsigned long)dst.height, pixelsPerPoint); }
+        lsfgHudEncode(cb, dst, pixelsPerPoint);
+    }
     trackPresented(drawable);
     [cb presentDrawable:drawable];
     [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
@@ -814,6 +836,7 @@ static void presentSlot(int slot, int generated, CFTimeInterval completedAt) {
     [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
         if (done.GPUEndTime > done.GPUStartTime) {
             atomic_fetch_add(&linkGpuUs, (long)((done.GPUEndTime - done.GPUStartTime) * 1e6));
+            atomic_fetch_add(&totalDisplayNs, (long)((done.GPUEndTime - done.GPUStartTime) * 1e9));
             atomic_fetch_add(&linkGpuCount, 1);
         }
     }];
@@ -857,6 +880,7 @@ static BOOL fgShouldRun(void) {
     CFTimeInterval now = CACurrentMediaTime(), dt = now - lastFrame;
     lastFrame = now;
     if (dt > 0.002 && dt < 0.25) gameInterval = gameInterval > 0 ? gameInterval * 0.9 + dt * 0.1 : dt;
+    if (dt > 0 && dt < 0.25) lsfgHudGameFrame((float)(dt * 1000));
 
     // Hysteresis around the point where a generated frame starts to fit (1.5 refreshes).
     double refresh = effectiveRefresh();
@@ -873,11 +897,71 @@ static BOOL fgShouldRun(void) {
     fgRunLSFG = atomic_load(&fgOn) && !aside;
     if (fgRunLSFG) return YES;
     fgWarmup = 1;                 // LSFG's history goes stale meanwhile: prime it again when it resumes
-    if (scalerWanted()) return YES;   // the overlay still shows the game's own frames, upscaled
+    if (overlayWanted()) return YES;   // the overlay still shows the game's own frames, upscaled or with the HUD
     if (atomic_load(&overlayState) == 2) setOverlayHidden(YES);
     return NO;
 }
 
+// LSFG's GPU time for the HUD: a timestamp at the end of the copy into LSFG and one at the start of the copy out of
+// it, in a ring of slots read back when the command buffer completes. GPU ticks are converted with a rate measured
+// against the CPU clock over the first half second.
+enum { kLsfgTimingSlots = 32 };
+static id<MTLCounterSampleBuffer> lsfgSamples;
+static _Atomic double lsfgTicksPerNs;   // 0 until measured
+static _Atomic unsigned lsfgNextSlot;
+
+static int lsfgTimingSlot(id<MTLDevice> device) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        if (![device supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary]) return;
+        id<MTLCounterSet> timestamps = nil;
+        for (id<MTLCounterSet> set in device.counterSets)
+            if ([set.name isEqualToString:MTLCommonCounterSetTimestamp]) timestamps = set;
+        if (!timestamps) return;
+        MTLCounterSampleBufferDescriptor *d = [MTLCounterSampleBufferDescriptor new];
+        d.counterSet = timestamps;
+        d.sampleCount = 2 * kLsfgTimingSlots;
+        d.storageMode = MTLStorageModeShared;
+        NSError *error = nil;
+        lsfgSamples = [device newCounterSampleBufferWithDescriptor:d error:&error];
+        if (!lsfgSamples) { lsfg_log(@"HUD: no GPU timestamps for LSFG (%@)", error.localizedDescription); return; }
+        MTLTimestamp cpu0, gpu0;
+        [device sampleTimestamps:&cpu0 gpuTimestamp:&gpu0];
+        const CFTimeInterval t0 = CACurrentMediaTime();
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 2), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            MTLTimestamp cpu1, gpu1;
+            [device sampleTimestamps:&cpu1 gpuTimestamp:&gpu1];
+            const double ns = (CACurrentMediaTime() - t0) * 1e9;
+            if (gpu1 > gpu0 && ns > 0) atomic_store(&lsfgTicksPerNs, (gpu1 - gpu0) / ns);
+        });
+    });
+    if (!lsfgSamples || atomic_load(&lsfgTicksPerNs) <= 0) return -1;
+    return (int)(atomic_fetch_add(&lsfgNextSlot, 1) % kLsfgTimingSlots);
+}
+
+// The blit pass before LSFG (after: NO) samples at its end, the one after LSFG at its start.
+static MTLBlitPassDescriptor *lsfgTimingPass(int slot, BOOL after) {
+    MTLBlitPassDescriptor *pass = [MTLBlitPassDescriptor blitPassDescriptor];
+    if (slot >= 0) {
+        MTLBlitPassSampleBufferAttachmentDescriptor *a = pass.sampleBufferAttachments[0];
+        a.sampleBuffer = lsfgSamples;
+        a.startOfEncoderSampleIndex = after ? 2 * slot + 1 : MTLCounterDontSample;
+        a.endOfEncoderSampleIndex = after ? MTLCounterDontSample : 2 * slot;
+    }
+    return pass;
+}
+
+static void lsfgTimingCollect(int slot) {
+    NSData *data = [lsfgSamples resolveCounterRange:NSMakeRange(2 * slot, 2)];
+    if (data.length < 2 * sizeof(MTLCounterResultTimestamp)) return;
+    const MTLCounterResultTimestamp *t = data.bytes;
+    const double rate = atomic_load(&lsfgTicksPerNs);
+    if (t[0].timestamp == MTLCounterErrorValue || t[1].timestamp == MTLCounterErrorValue || t[1].timestamp <= t[0].timestamp || rate <= 0) return;
+    const double ns = (t[1].timestamp - t[0].timestamp) / rate;
+    if (ns <= 0 || ns > 1e8) return;
+    atomic_fetch_add(&totalLsfgNs, (long)ns);
+    atomic_fetch_add(&totalLsfgFrames, 1);
+}
 
 static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, void (^targetRead)(id<MTLCommandBuffer>)) {
     int state = atomic_load(&fgState);
@@ -911,7 +995,7 @@ static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, void (^targ
     BOOL capture = ov == 2;
     // While LSFG primes (no history yet) the game shows its own frame, unless scaling needs the overlay anyway.
     BOOL priming = NO;
-    if (fgRunLSFG && fgWarmup > 0) { fgWarmup--; priming = YES; if (!scalerWanted()) capture = NO; }
+    if (fgRunLSFG && fgWarmup > 0) { fgWarmup--; priming = YES; if (!overlayWanted()) capture = NO; }
 
     // A slot frees up when the display has shown (or skipped) its frames. If none frees up within
     // 2 ms (game running faster than the slots cover, or the display link slowed down because the
@@ -932,7 +1016,9 @@ static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, void (^targ
     // Feed LSFG every real frame (this also warms up its history before the overlay is up), and
     // keep the real frame for display. These are the only reads of the game's frame.
     id<MTLTexture> input = (__bridge id<MTLTexture>)bridge.input(fgContext);
-    id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+    // With the HUD on, GPU timestamps between the copy before LSFG and the copy after it time LSFG itself.
+    const int timing = config.hud && fgRunLSFG && capture ? lsfgTimingSlot(cb.device) : -1;
+    id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoderWithDescriptor:lsfgTimingPass(timing, NO)];
     if (fgRunLSFG) [blit copyFromTexture:target toTexture:input];
     if (capture) [blit copyFromTexture:target toTexture:realRing[slot]];
     [blit endEncoding];
@@ -941,7 +1027,7 @@ static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, void (^targ
     if (priming) generated = 0;
     if (!capture) return;
 
-    blit = [cb blitCommandEncoder];
+    blit = [cb blitCommandEncoderWithDescriptor:lsfgTimingPass(timing, YES)];
     generated = MAX(0, MIN(generated, kMaxGenerated));
     while (generated > 0 && !genRing[slot][generated - 1]) generated--;
     for (int j = 0; j < generated; j++)
@@ -953,6 +1039,7 @@ static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, void (^targ
     bump(kCaptured);
 
     int count = MAX(0, MIN(generated, kMaxGenerated));
+    if (timing >= 0) [cb addCompletedHandler:^(id<MTLCommandBuffer> done) { lsfgTimingCollect(timing); }];
     [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
         CFTimeInterval now = CACurrentMediaTime();
         if (done.GPUEndTime > done.GPUStartTime) {
@@ -1263,16 +1350,37 @@ static void installPresentHooks(void) {
             }
         }
     };
+    // With the HUD on, the game's Metal 4 commits report their GPU time through commit feedback (Metal 4 command
+    // buffers have no GPU start and end times of their own). A plain commit:count: is turned into commit:count:options:
+    // with our options; a game's own options object gets our handler once.
+    static _Thread_local int innerCommit;
+    static char kFeedbackKey;
     hookAll(@selector(commit:count:), signals, ^id(IMP orig) {
         return ^(id self, const id *buffers, NSUInteger count) {
             bump(kMTL4Commit);
-            ((void (*)(id, SEL, const id *, NSUInteger))orig)(self, @selector(commit:count:), buffers, count);
+            if (config.hud && [self respondsToSelector:@selector(commit:count:options:)]) {
+                MTL4CommitOptions *options = [MTL4CommitOptions new];
+                [options addFeedbackHandler:^(id<MTL4CommitFeedback> fb) { addGpuSpan(fb.GPUStartTime, fb.GPUEndTime); }];
+                innerCommit++;
+                [(id<MTL4CommandQueue>)self commit:buffers count:count options:options];
+                innerCommit--;
+            } else {
+                ((void (*)(id, SEL, const id *, NSUInteger))orig)(self, @selector(commit:count:), buffers, count);
+            }
             afterMTL4Commit(self, buffers, count);
         };
     });
     hookAll(@selector(commit:count:options:), signals, ^id(IMP orig) {
         return ^(id self, const id *buffers, NSUInteger count, id options) {
+            if (innerCommit) { ((void (*)(id, SEL, const id *, NSUInteger, id))orig)(self, @selector(commit:count:options:), buffers, count, options); return; }
             bump(kMTL4Commit);
+            if (config.hud) {
+                if (!options) options = [MTL4CommitOptions new];
+                if (!objc_getAssociatedObject(options, &kFeedbackKey)) {
+                    objc_setAssociatedObject(options, &kFeedbackKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                    [(MTL4CommitOptions *)options addFeedbackHandler:^(id<MTL4CommitFeedback> fb) { addGpuSpan(fb.GPUStartTime, fb.GPUEndTime); }];
+                }
+            }
             ((void (*)(id, SEL, const id *, NSUInteger, id))orig)(self, @selector(commit:count:options:), buffers, count, options);
             afterMTL4Commit(self, buffers, count);
         };
@@ -1304,6 +1412,7 @@ static void installLayerHook(void) {
             static _Thread_local int depth;
             if (depth++ == 0) {
                 bump(kNextDrawable);
+                atomic_fetch_add(&totalGameFrames, 1);
                 // Frame generation must read the drawable; framebufferOnly forbids that.
                 CAMetalLayer *layer = self;
                 fgLayer = layer;
@@ -1327,17 +1436,71 @@ static void installLayerHook(void) {
 
 static NSString *nssStatsLine(void);   // lsfg_nss_hook.m
 
+void lsfgHudReadTotals(LSFGHudTotals *t) {
+    os_unfair_lock_lock(&busyLock);
+    t->gpuBusyMs = busyTotal * 1000;
+    os_unfair_lock_unlock(&busyLock);
+    t->gameFrames = atomic_load(&totalGameFrames);
+    t->lsfgMs = atomic_load(&totalLsfgNs) / 1e6; t->lsfgFrames = atomic_load(&totalLsfgFrames);
+    t->upscaleMs = atomic_load(&totalUpscaleNs) / 1e6; t->upscaleFrames = atomic_load(&totalUpscaleFrames);
+    t->displayMs = atomic_load(&totalDisplayNs) / 1e6;
+    t->lsfgInGameWork = fgQueue == nil;
+    t->settingsChanges = atomic_load(&totalSettingsChanges);   // the Metal 4 path runs LSFG on its own queue
+}
+// The DLSS replacement's median GPU time over the last second, for the HUD (nssStatsLine sets them).
+static double hudUpscaleMs;
+static int hudUpscaleKind = -1;        // 0 MetalFX, 1 NSS, -1 none ran
+
+// What the HUD shows for the last second. `c`: this second's counters.
+static void publishHUD(const long *c, int shown, double mean, double sd, double max, int dropped, double fgMs, double presentMs,
+                       double queuedMs, double busy) {
+    LSFGHudSnapshot h = {0};
+    h.screenFps = shown; h.gameFps = (int)(c[kNextDrawable] ? c[kNextDrawable] : c[kDrawablePresent]);
+    h.intervalMs = mean; h.intervalSdMs = sd; h.intervalMaxMs = max; h.dropped = dropped;
+    const double refresh = effectiveRefresh();
+    h.refreshHz = refresh > 0 ? 1 / refresh : 0;
+    h.fgGpuMs = fgRunLSFG ? fgMs : 0; h.presentGpuMs = presentMs; h.queuedMs = queuedMs; h.gpuBusy = busy;
+    if (!fgAvailable) snprintf(h.frameGen, sizeof h.frameGen, "unavailable");
+    else if (!atomic_load(&fgOn)) snprintf(h.frameGen, sizeof h.frameGen, "off");
+    else if (atomic_load(&fgSteppedAside)) snprintf(h.frameGen, sizeof h.frameGen, "paused: game above half refresh");
+    else if (config.flowScale < 0.99f)
+        snprintf(h.frameGen, sizeof h.frameGen, "LSFG %d\u00d7 %s, flow %.0f%%", config.multiplier, config.performance ? "performance" : "quality", config.flowScale * 100);
+    else snprintf(h.frameGen, sizeof h.frameGen, "LSFG %d\u00d7 %s", config.multiplier, config.performance ? "performance" : "quality");
+    if (hudUpscaleKind == 1) {
+        static const char *q[] = {"low", "mid", "high", "fast"};
+        snprintf(h.upscaler, sizeof h.upscaler, "NSS %s", q[MAX(0, MIN(config.nssQuality, 3))]);
+    } else if (hudUpscaleKind == 0) {
+        snprintf(h.upscaler, sizeof h.upscaler, "MetalFX");
+    }
+    h.upscaleMs = hudUpscaleKind >= 0 ? hudUpscaleMs : 0;
+    ScaleCtx *sc = atomic_load(&scaleCurrent);
+    if (sc) {
+        static const char *names[] = {"off", "LS1", "FSR", "BCAS", "Bicubic", "Nearest"};
+        snprintf(h.scaling, sizeof h.scaling, "%s%s %d\u00d7%d \u2192 %d\u00d7%d", names[MAX(0, MIN(sc->mode, 5))],
+                 sc->mode == 1 && sc->perf ? " perf" : "", sc->inW, sc->inH, sc->outW, sc->outH);
+    }
+    task_vm_info_data_t vm;
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vm, &count) == KERN_SUCCESS) h.memoryMB = vm.phys_footprint / 1048576.0;
+    h.thermal = (int)NSProcessInfo.processInfo.thermalState;
+    lsfgHudPublish(&h);
+}
+
 static void startStatsTimer(void) {
     static dispatch_source_t timer;
     timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
     dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), NSEC_PER_SEC, NSEC_PER_SEC / 10);
     dispatch_source_set_event_handler(timer, ^{
         NSMutableString *line = [NSMutableString string];
+        long c[kCounterCount];
         for (int i = 0; i < kCounterCount; i++) {
-            long n = atomic_exchange(&counters[i], 0);
+            long n = c[i] = atomic_exchange(&counters[i], 0);
             if (n) [line appendFormat:@" %s=%ld", counterNames[i], n];
         }
         os_unfair_lock_lock(&pacingLock);
+        const int hudShown = shownCount > 1 ? shownCount + 1 : shownCount, hudDropped = droppedCount;
+        const double hudMean = shownCount ? shownSum / shownCount : 0, hudMax = shownMax;
+        const double hudSd = shownCount ? sqrt(MAX(0, shownSumSq / shownCount - hudMean * hudMean)) : 0;
         if (shownCount > 1) {
             double mean = shownSum / shownCount, sd = sqrt(MAX(0, shownSumSq / shownCount - mean * mean));
             [line appendFormat:@" | on screen %d fps, interval %.1f ms ±%.1f, max %.1f, dropped %d",
@@ -1360,6 +1523,24 @@ static void startStatsTimer(void) {
                          @"present GPU %.2f ms, queued %.1f ms ahead, buffer %.1f ms, GPU busy %.0f%%", wu / 1000.0, fu / 1000.0 / fn,
                          ln ? lu / 1000.0 / ln : 0.0, qn ? qu / 1000.0 / qn : 0.0, adaptiveBuffer * 1000, busy * 100);
         else if (busy > 0) lsfg_log(@"timing: GPU busy %.0f%% (frame generation idle)", busy * 100);
+        if (config.hud) {
+            // The HUD's frame cost over the last second, per game frame.
+            static LSFGHudTotals prev;
+            LSFGHudTotals now;
+            lsfgHudReadTotals(&now);
+            const double frames = (double)(now.gameFrames - prev.gameFrames);
+            if (frames > 0 && prev.gameFrames > 0) {
+                const double up = now.upscaleMs - prev.upscaleMs, lsfg = now.lsfgMs - prev.lsfgMs;
+                const long lf = now.lsfgFrames - prev.lsfgFrames, uf = now.upscaleFrames - prev.upscaleFrames;
+                lsfg_log(@"frame cost: game %.2f ms, upscale %.2f ms, LSFG %.2f ms (%ld frames timed), display %.2f ms per game frame",
+                         MAX(0, (now.gpuBusyMs - prev.gpuBusyMs - up - (now.lsfgInGameWork ? lsfg : 0)) / frames),
+                         uf ? up / uf : 0.0, lf ? lsfg / lf : 0.0, lf, (now.displayMs - prev.displayMs) / frames);
+            }
+            prev = now;
+        }
+        if (config.hud)
+            publishHUD(c, hudShown, hudMean, hudSd, hudMax, hudDropped, fn ? fu / 1000.0 / fn : 0, ln ? lu / 1000.0 / ln : 0,
+                       qn ? qu / 1000.0 / qn : 0, busy);
         reloadConfigIfChanged();
         // Memory every 10 s, so leaks show up in the log (same number as Activity Monitor's "Memory").
         static int tick;

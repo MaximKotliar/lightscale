@@ -75,6 +75,7 @@ The hook reads them when the game starts, matching on the exe name. These enviro
 | `LSFG_PERFORMANCE=0` | performance | LSFG quality mode |
 | `LSFG_FLOW_SCALE` | 1.0 | Motion-estimation resolution, 0.25–1.0 |
 | `LSFG_BUFFER_MS` | 8 | Scheduling headroom: higher is smoother, lower has less lag |
+| `LSFG_HUD=1` | off | Performance HUD in the game (the profile's `hud`) |
 | `LSFG_TRACE=1` | off | Per-frame timing for the first frames |
 | `LSFG_LOG` | `~/Library/Logs/Lightscale.log` | Log file; every second it records presents, generated frames, on-screen fps, frame-time spread and drops; every 10 s the process's memory footprint |
 
@@ -92,6 +93,7 @@ The hook reads them when the game starts, matching on the exe name. These enviro
 - `build/bridge_test`: runs the LSFG engine under Rosetta on synthetic RGB10A2 frames.
 - `build/fake_game`: imitates D3DMetal's present pattern in a window. Load the hook with `DYLD_INSERT_LIBRARIES=$PWD/build/lsfghook.so`. `FAKE_FPS`, `FAKE_JITTER=1` and `FAKE_GPU_MS` simulate real-game conditions. `FAKE_MTL4=1` presents through Metal 4 like GPTK 4 (`FAKE_MTL4_PASSES=2`: two submissions per frame, like TLOU Part II). `FAKE_FPS_PLAN=30:8,95:8,30:8` (with `FAKE_THREAD=1`) changes the frame rate over time. The window floats above others, since macOS throttles the display link for covered windows. `FAKE_THREAD=1` renders from a plain thread, like Wine's (`FAKE_THREAD=2`: without a per-frame autorelease pool), and `FAKE_SECONDS` sets how long it runs.
 - `build/present_order`: shows which presentation patterns Core Animation drops.
+- `test/hud_preview.sh [out.png]`: draws the performance HUD with sample numbers into a PNG (default `build/hud_preview.png`), to check its look without a game.
 
 ## Upscaling: NSS in place of MetalFX
 
