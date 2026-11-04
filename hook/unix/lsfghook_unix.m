@@ -554,6 +554,18 @@ static void attachOverlay(CAMetalLayer *game) {
     });
 }
 
+// Backing scale of the screen showing `layer`'s window (1 if it isn't found).
+static CGFloat screenScaleOf(CALayer *layer) {
+    CALayer *root = layer;
+    while (root.superlayer) root = root.superlayer;
+    for (NSWindow *w in NSApp.windows) {
+        CALayer *l = w.contentView.layer;
+        while (l.superlayer) l = l.superlayer;
+        if (l == root) return (w.screen ?: NSScreen.mainScreen).backingScaleFactor;
+    }
+    return NSScreen.mainScreen ? NSScreen.mainScreen.backingScaleFactor : 1;
+}
+
 // Sizes the overlay for the current scaling setting and builds the upscaler for it (main thread). With scaling on,
 // the overlay's drawable has the window's real pixel size and the game's frames are upscaled into it; otherwise it
 // has the frames' own size.
@@ -564,11 +576,17 @@ static void updateScaler(void) {
                             config.scaler, NSStringFromRect(NSRectFromCGRect(o.bounds)), o.contentsScale);
     if (!o || atomic_load(&overlayState) != 2 || fgWidth == 0) { atomic_store(&scaleUpdateQueued, false); return; }
     const int inW = (int)fgWidth, inH = (int)fgHeight;
-    const CGSize native = CGSizeMake(round(o.bounds.size.width * o.contentsScale), round(o.bounds.size.height * o.contentsScale));
+    // The window's real pixels come from its screen, not the game's layer: with CrossOver's high-resolution mode off
+    // the game draws at 1x on a Retina screen, which is what there is to upscale.
+    const CGFloat gameScale = o.superlayer ? o.superlayer.contentsScale : o.contentsScale;
+    const CGFloat pixelScale = MAX(gameScale, screenScaleOf(o));
+    const CGSize native = CGSizeMake(round(o.bounds.size.width * pixelScale), round(o.bounds.size.height * pixelScale));
     const BOOL scale = scalerWanted() && (native.width > inW + 1 || native.height > inH + 1);   // upscaling only
     const CGSize canvas = scale ? native : CGSizeMake(inW, inH);
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
+    const CGFloat layerScale = scale ? pixelScale : gameScale;
+    if (o.contentsScale != layerScale) o.contentsScale = layerScale;
     if (!CGSizeEqualToSize(o.drawableSize, canvas)) o.drawableSize = canvas;
     [CATransaction commit];
     const int mode = config.scaler, perf = config.scalerPerformance;
