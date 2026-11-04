@@ -23,6 +23,7 @@ void lsfgHudReadTotals(LSFGHudTotals *t) {
     t->lsfgMs = frames * 1.21; t->lsfgFrames = (long)frames;
     t->gpuBusyMs = game + t->upscaleMs;
     t->displayMs = frames * 2 * 0.52;
+    t->displayPasses = (long)(frames * 2); t->displayPassMs = 0.40;
     t->lsfgInGameWork = 0;
     t->settingsChanges = 0;
 }

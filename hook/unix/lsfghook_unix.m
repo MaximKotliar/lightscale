@@ -233,7 +233,11 @@ static void addGpuSpan(CFTimeInterval start, CFTimeInterval end) {
 static _Atomic long slotWaitUs, frameGpuUs, frameGpuCount, linkGpuUs, linkGpuCount, queueAheadUs, queueAheadCount;
 // Running totals for the HUD's frame-cost graph (nanoseconds), never reset.
 static _Atomic long totalSettingsChanges;
-static _Atomic long totalGameFrames, totalLsfgNs, totalLsfgFrames, totalUpscaleNs, totalUpscaleFrames, totalDisplayNs;
+static _Atomic long totalGameFrames, totalLsfgNs, totalLsfgFrames, totalUpscaleNs, totalUpscaleFrames, totalDisplayNs, totalDisplayPasses;
+// The overlay pass's recent timed durations (ns) and the settings they ran with, for the HUD's low percentile.
+enum { kDisplayPassRing = 256 };
+static _Atomic long displayPassNs[kDisplayPassRing], displayPassSettings[kDisplayPassRing];
+static _Atomic unsigned displayPassNext;
 void lsfgHudReadTotals(LSFGHudTotals *t);
 
 // A slot is taken when the game submits a frame and freed once that frame has been shown, which
@@ -764,6 +768,12 @@ static void presentSlot(int slot, int generated, CFTimeInterval completedAt) {
     os_unfair_lock_unlock(&queueLock);
 }
 
+// GPU timestamps for the HUD (below, with LSFG's timing): per-kind rings of slots.
+enum { kLsfgTimingSlots = 32, kTimingLsfg = 0, kTimingDisplay = 1 };
+static int timingSlot(id<MTLDevice> device, int kind);
+static double timingRead(int slot);
+static void timingBracket(id<MTLCommandBuffer> cb, int slot, BOOL after);
+
 @interface LSFGDisplayLinkTarget : NSObject <CAMetalDisplayLinkDelegate>
 @end
 
@@ -809,6 +819,8 @@ static void presentSlot(int slot, int generated, CFTimeInterval completedAt) {
         return;
     }
     id<MTLCommandBuffer> cb = [presentQueue commandBuffer];
+    const int timing = config.hud ? timingSlot(cb.device, kTimingDisplay) : -1;
+    if (timing >= 0) timingBracket(cb, timing, NO);
     if (scaled) {
         if (sc->outW < sc->canvasW || sc->outH < sc->canvasH) {   // letterbox: black around the picture
             MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -831,6 +843,7 @@ static void presentSlot(int slot, int generated, CFTimeInterval completedAt) {
         if (!logged) { logged = true; lsfg_log(@"HUD: drawing on %lux%lu at %.2f px/pt", (unsigned long)dst.width, (unsigned long)dst.height, pixelsPerPoint); }
         lsfgHudEncode(cb, dst, pixelsPerPoint * config.hudScale);
     }
+    if (timing >= 0) timingBracket(cb, timing, YES);
     trackPresented(drawable);
     [cb presentDrawable:drawable];
     [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
@@ -839,9 +852,18 @@ static void presentSlot(int slot, int generated, CFTimeInterval completedAt) {
         os_unfair_lock_unlock(&queueLock);
     }];
     [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
-        if (done.GPUEndTime > done.GPUStartTime) {
-            atomic_fetch_add(&linkGpuUs, (long)((done.GPUEndTime - done.GPUStartTime) * 1e6));
-            atomic_fetch_add(&totalDisplayNs, (long)((done.GPUEndTime - done.GPUStartTime) * 1e9));
+        // the pass's own GPU time when it has timestamps, else the command buffer's span
+        double ns = timing >= 0 ? timingRead(timing) : -1;
+        if (ns >= 0) {
+            const unsigned i = atomic_fetch_add(&displayPassNext, 1) % kDisplayPassRing;
+            atomic_store(&displayPassSettings[i], atomic_load(&totalSettingsChanges));
+            atomic_store(&displayPassNs[i], (long)ns);
+        }
+        if (ns < 0 && done.GPUEndTime > done.GPUStartTime) ns = (done.GPUEndTime - done.GPUStartTime) * 1e9;
+        atomic_fetch_add(&totalDisplayPasses, 1);
+        if (ns >= 0) {
+            atomic_fetch_add(&linkGpuUs, (long)(ns / 1e3));
+            atomic_fetch_add(&totalDisplayNs, (long)ns);
             atomic_fetch_add(&linkGpuCount, 1);
         }
     }];
@@ -907,15 +929,19 @@ static BOOL fgShouldRun(void) {
     return NO;
 }
 
-// LSFG's GPU time for the HUD: a timestamp at the end of the copy into LSFG and one at the start of the copy out of
-// it, in a ring of slots read back when the command buffer completes. GPU ticks are converted with a rate measured
-// against the CPU clock over the first half second.
-enum { kLsfgTimingSlots = 32 };
+// GPU times for the HUD, from timestamps around the work rather than the command buffer's start and end (which also
+// count the time it waits while the GPU runs the game's work):
+// - LSFG: a timestamp at the end of the copy into LSFG and one at the start of the copy out of it;
+// - the overlay's display pass: around everything it encodes, with a tiny blit before and after as the markers.
+// Each kind has a ring of slots, read back when the command buffer completes. GPU ticks are converted with a rate
+// measured against the CPU clock over the first half second.
 static id<MTLCounterSampleBuffer> lsfgSamples;
 static _Atomic double lsfgTicksPerNs;   // 0 until measured
 static _Atomic unsigned lsfgNextSlot;
 
-static int lsfgTimingSlot(id<MTLDevice> device) {
+static id<MTLBuffer> timingMarker;   // what the marker blits fill: 4 bytes nobody reads
+
+static int timingSlot(id<MTLDevice> device, int kind) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         if (![device supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary]) return;
@@ -925,11 +951,12 @@ static int lsfgTimingSlot(id<MTLDevice> device) {
         if (!timestamps) return;
         MTLCounterSampleBufferDescriptor *d = [MTLCounterSampleBufferDescriptor new];
         d.counterSet = timestamps;
-        d.sampleCount = 2 * kLsfgTimingSlots;
+        d.sampleCount = 2 * 2 * kLsfgTimingSlots;
         d.storageMode = MTLStorageModeShared;
         NSError *error = nil;
         lsfgSamples = [device newCounterSampleBufferWithDescriptor:d error:&error];
-        if (!lsfgSamples) { lsfg_log(@"HUD: no GPU timestamps for LSFG (%@)", error.localizedDescription); return; }
+        if (!lsfgSamples) { lsfg_log(@"HUD: no GPU timestamps (%@)", error.localizedDescription); return; }
+        timingMarker = [device newBufferWithLength:16 options:MTLResourceStorageModePrivate];
         MTLTimestamp cpu0, gpu0;
         [device sampleTimestamps:&cpu0 gpuTimestamp:&gpu0];
         const CFTimeInterval t0 = CACurrentMediaTime();
@@ -941,8 +968,11 @@ static int lsfgTimingSlot(id<MTLDevice> device) {
         });
     });
     if (!lsfgSamples || atomic_load(&lsfgTicksPerNs) <= 0) return -1;
-    return (int)(atomic_fetch_add(&lsfgNextSlot, 1) % kLsfgTimingSlots);
+    static _Atomic unsigned displayNextSlot;
+    _Atomic unsigned *next = kind == kTimingDisplay ? &displayNextSlot : &lsfgNextSlot;
+    return kind * kLsfgTimingSlots + (int)(atomic_fetch_add(next, 1) % kLsfgTimingSlots);
 }
+static int lsfgTimingSlot(id<MTLDevice> device) { return timingSlot(device, kTimingLsfg); }
 
 // The blit pass before LSFG (after: NO) samples at its end, the one after LSFG at its start.
 static MTLBlitPassDescriptor *lsfgTimingPass(int slot, BOOL after) {
@@ -956,14 +986,33 @@ static MTLBlitPassDescriptor *lsfgTimingPass(int slot, BOOL after) {
     return pass;
 }
 
-static void lsfgTimingCollect(int slot) {
+// The time between a slot's two timestamps in ns, or -1.
+static double timingRead(int slot) {
     NSData *data = [lsfgSamples resolveCounterRange:NSMakeRange(2 * slot, 2)];
-    if (data.length < 2 * sizeof(MTLCounterResultTimestamp)) return;
+    if (data.length < 2 * sizeof(MTLCounterResultTimestamp)) return -1;
     const MTLCounterResultTimestamp *t = data.bytes;
     const double rate = atomic_load(&lsfgTicksPerNs);
-    if (t[0].timestamp == MTLCounterErrorValue || t[1].timestamp == MTLCounterErrorValue || t[1].timestamp <= t[0].timestamp || rate <= 0) return;
+    if (t[0].timestamp == MTLCounterErrorValue || t[1].timestamp == MTLCounterErrorValue || t[1].timestamp <= t[0].timestamp || rate <= 0) return -1;
     const double ns = (t[1].timestamp - t[0].timestamp) / rate;
-    if (ns <= 0 || ns > 1e8) return;
+    return ns > 0 && ns < 1e8 ? ns : -1;
+}
+
+// A tiny blit timestamped on its outer edge, its start before the pass (after: NO) and its end after it (YES):
+// brackets a pass made of other encoders, and stays right if Metal merges it with the blit next to it.
+static void timingBracket(id<MTLCommandBuffer> cb, int slot, BOOL after) {
+    MTLBlitPassDescriptor *pass = [MTLBlitPassDescriptor blitPassDescriptor];
+    MTLBlitPassSampleBufferAttachmentDescriptor *a = pass.sampleBufferAttachments[0];
+    a.sampleBuffer = lsfgSamples;
+    a.startOfEncoderSampleIndex = after ? MTLCounterDontSample : 2 * slot;
+    a.endOfEncoderSampleIndex = after ? 2 * slot + 1 : MTLCounterDontSample;
+    id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoderWithDescriptor:pass];
+    [blit fillBuffer:timingMarker range:NSMakeRange(0, 4) value:0];
+    [blit endEncoding];
+}
+
+static void lsfgTimingCollect(int slot) {
+    const double ns = timingRead(slot);
+    if (ns < 0) return;
     atomic_fetch_add(&totalLsfgNs, (long)ns);
     atomic_fetch_add(&totalLsfgFrames, 1);
 }
@@ -1449,6 +1498,23 @@ void lsfgHudReadTotals(LSFGHudTotals *t) {
     t->lsfgMs = atomic_load(&totalLsfgNs) / 1e6; t->lsfgFrames = atomic_load(&totalLsfgFrames);
     t->upscaleMs = atomic_load(&totalUpscaleNs) / 1e6; t->upscaleFrames = atomic_load(&totalUpscaleFrames);
     t->displayMs = atomic_load(&totalDisplayNs) / 1e6;
+    t->displayPasses = atomic_load(&totalDisplayPasses);
+    // the 25th percentile of the timed passes with the current settings: the pass when the game's work didn't land
+    // in the middle of it
+    const long settings = atomic_load(&totalSettingsChanges);
+    const unsigned stored = MIN(atomic_load(&displayPassNext), (unsigned)kDisplayPassRing);
+    long recent[kDisplayPassRing];
+    int n = 0;
+    for (unsigned i = 0; i < stored; i++)
+        if (atomic_load(&displayPassSettings[i]) == settings) recent[n++] = atomic_load(&displayPassNs[i]);
+    t->displayPassMs = 0;
+    if (n >= 10) {
+        qsort_b(recent, n, sizeof recent[0], ^int(const void *a, const void *b) {
+            const long x = *(const long *)a, y = *(const long *)b;
+            return x < y ? -1 : x > y;
+        });
+        t->displayPassMs = recent[n / 4] / 1e6;
+    }
     t->lsfgInGameWork = fgQueue == nil;
     t->settingsChanges = atomic_load(&totalSettingsChanges);   // the Metal 4 path runs LSFG on its own queue
 }
@@ -1537,9 +1603,13 @@ static void startStatsTimer(void) {
             if (frames > 0 && prev.gameFrames > 0) {
                 const double up = now.upscaleMs - prev.upscaleMs, lsfg = now.lsfgMs - prev.lsfgMs;
                 const long lf = now.lsfgFrames - prev.lsfgFrames, uf = now.upscaleFrames - prev.upscaleFrames;
-                lsfg_log(@"frame cost: game %.2f ms, upscale %.2f ms, LSFG %.2f ms (%ld frames timed), display %.2f ms per game frame",
+                const long passes = now.displayPasses - prev.displayPasses;
+                lsfg_log(@"frame cost: game %.2f ms, upscale %.2f ms, LSFG %.2f ms (%ld frames timed), display %.2f ms per game frame "
+                         @"(%.3f ms a pass, %.2f passes a frame; mean %.3f ms)",
                          MAX(0, (now.gpuBusyMs - prev.gpuBusyMs - up - (now.lsfgInGameWork ? lsfg : 0)) / frames),
-                         uf ? up / uf : 0.0, lf ? lsfg / lf : 0.0, lf, (now.displayMs - prev.displayMs) / frames);
+                         uf ? up / uf : 0.0, lf ? lsfg / lf : 0.0, lf,
+                         now.displayPassMs > 0 ? now.displayPassMs * passes / frames : (now.displayMs - prev.displayMs) / frames,
+                         now.displayPassMs, passes / frames, passes ? (now.displayMs - prev.displayMs) / passes : 0.0);
             }
             prev = now;
         }

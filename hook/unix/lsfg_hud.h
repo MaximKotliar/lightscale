@@ -29,6 +29,9 @@ typedef struct {
     double lsfgMs; long lsfgFrames;        // LSFG's GPU time, and the frames it was timed on
     double upscaleMs; long upscaleFrames;  // the DLSS replacement (MetalFX or NSS), inside the game's command buffers
     double displayMs;           // the overlay's passes: copy or scaling, and the HUD
+    long displayPasses;         // how many overlay passes ran
+    double displayPassMs;       // one overlay pass on its own: the 25th percentile of recent timed passes (0: unknown).
+                                // Their mean also counts time the GPU spent on the game's work in between.
     int lsfgInGameWork;         // LSFG runs inside the game's command buffers (Metal 3), so it's part of gpuBusyMs
     long settingsChanges;       // goes up whenever a setting changes: the HUD starts its average over
 } LSFGHudTotals;

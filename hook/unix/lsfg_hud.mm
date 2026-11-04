@@ -291,7 +291,10 @@ static void sampleCost(CFTimeInterval now) {
     c.part[0] = (float)fmax(0, (b.gpuBusyMs - a.gpuBusyMs - up - (b.lsfgInGameWork ? lsfg : 0)) / frames);
     c.part[1] = upFrames > 0 ? (float)(up / upFrames) : 0;
     c.part[2] = lsfgFrames > 0 ? (float)(lsfg / lsfgFrames) : 0;
-    c.part[3] = (float)((b.displayMs - a.displayMs) / frames);
+    // the overlay: one pass on its own (a low percentile) times the passes per game frame, since the mean also
+    // counts the game's work that ran in between
+    c.part[3] = (float)(b.displayPassMs > 0 ? b.displayPassMs * (double)(b.displayPasses - a.displayPasses) / frames
+                                             : (b.displayMs - a.displayMs) / frames);
     c.budget = (float)((n.time - o.time) * 1000 / frames);
     c.seconds = (float)(n.time - o.time);
     current = c;
