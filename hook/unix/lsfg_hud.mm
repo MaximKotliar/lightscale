@@ -5,6 +5,7 @@
 #import <IOKit/IOKitLib.h>
 #import <QuartzCore/QuartzCore.h>
 #include <atomic>
+#include <dlfcn.h>
 #include <math.h>
 #include <os/lock.h>
 #include "imgui.h"
@@ -31,10 +32,18 @@ static Ring screenRing, gameRing;
 static os_unfair_lock snapLock = OS_UNFAIR_LOCK_INIT;
 static LSFGHudSnapshot snap;
 static bool haveSnap;
-static double powerW = -1;   // the whole Mac, from the battery controller's telemetry (-1: unknown)
+#pragma mark Power
+
+// Read every 250 ms on a background queue while the HUD is drawn:
+// - the whole Mac: the SMC's total system power (PSTR, refreshed about once a second), or on Macs without it the
+//   battery controller's SystemLoad (every few seconds);
+// - the GPU: its energy counter from IOReport (as powermetrics reads it), averaged over the last second.
+static os_unfair_lock powerLock = OS_UNFAIR_LOCK_INIT;
+static double systemW = -1, gpuW = -1;   // -1: unknown
+static std::atomic<double> lastDrawn{0};  // CACurrentMediaTime of the last HUD frame
 
 // SystemLoad (mW): what the whole system draws, on battery or on the adapter. Portables only.
-static double readPowerW(void) {
+static double readBatteryW(void) {
     static io_service_t battery;
     static bool looked;
     if (!looked) {
@@ -54,12 +63,154 @@ static double readPowerW(void) {
     return watts;
 }
 
+// The SMC's PSTR key (float watts), through AppleSMC's user client: the struct and selector every SMC tool uses.
+struct SMCKeyData {
+    uint32_t key;
+    uint8_t vers[6]; uint8_t pad0[2];
+    uint16_t plVersion, plLength; uint32_t cpuPLimit, gpuPLimit, memPLimit;
+    uint32_t dataSize, dataType; uint8_t dataAttributes; uint8_t pad1[3];
+    uint8_t result, status, data8; uint8_t pad2; uint32_t data32;
+    uint8_t bytes[32];
+};
+static_assert(sizeof(SMCKeyData) == 80, "AppleSMC's struct");
+static double readSMCW(void) {
+    static io_connect_t smc;
+    static bool looked, broken;
+    static uint32_t size, type;
+    if (broken) return -1;
+    if (!looked) {
+        looked = true;
+        io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSMC"));
+        if (!service || IOServiceOpen(service, mach_task_self(), 0, &smc) != KERN_SUCCESS) { broken = true; return -1; }
+        IOObjectRelease(service);
+        SMCKeyData in = {}, out = {};
+        size_t n = sizeof out;
+        in.key = 'PSTR';
+        in.data8 = 9;   // key info
+        if (IOConnectCallStructMethod(smc, 2, &in, sizeof in, &out, &n) != KERN_SUCCESS || out.result || out.dataType != 'flt ') {
+            broken = true;
+            return -1;
+        }
+        size = out.dataSize; type = out.dataType;
+    }
+    SMCKeyData in = {}, out = {};
+    size_t n = sizeof out;
+    in.key = 'PSTR';
+    in.dataSize = size; in.dataType = type;
+    in.data8 = 5;   // read
+    if (IOConnectCallStructMethod(smc, 2, &in, sizeof in, &out, &n) != KERN_SUCCESS || out.result) return -1;
+    float w;
+    memcpy(&w, out.bytes, sizeof w);
+    return w > 0 && w < 2000 ? w : -1;
+}
+
+// IOReport (private, /usr/lib/libIOReport.dylib, loaded at run time): the "GPU Energy" channel of "Energy Model".
+static struct {
+    bool tried, ok;
+    CFDictionaryRef (*copyGroup)(CFStringRef, CFStringRef, uint64_t, uint64_t, uint64_t);
+    void *(*subscribe)(void *, CFMutableDictionaryRef, CFMutableDictionaryRef *, uint64_t, CFTypeRef);
+    CFDictionaryRef (*sample)(void *, CFMutableDictionaryRef, CFTypeRef);
+    CFDictionaryRef (*delta)(CFDictionaryRef, CFDictionaryRef, CFTypeRef);
+    int64_t (*integer)(CFDictionaryRef, int32_t);
+    CFStringRef (*name)(CFDictionaryRef), (*unit)(CFDictionaryRef);
+    void *subscription;
+    CFMutableDictionaryRef channels;
+    CFDictionaryRef previous;
+    CFTimeInterval previousTime;
+    double joules[4], seconds[4];   // the last four intervals: about a second
+    int next;
+} ior;
+
+static bool setUpIOReport(void) {
+    if (ior.tried) return ior.ok;
+    ior.tried = true;
+    void *lib = dlopen("/usr/lib/libIOReport.dylib", RTLD_NOW);
+    if (!lib) return false;
+    ior.copyGroup = (decltype(ior.copyGroup))dlsym(lib, "IOReportCopyChannelsInGroup");
+    ior.subscribe = (decltype(ior.subscribe))dlsym(lib, "IOReportCreateSubscription");
+    ior.sample = (decltype(ior.sample))dlsym(lib, "IOReportCreateSamples");
+    ior.delta = (decltype(ior.delta))dlsym(lib, "IOReportCreateSamplesDelta");
+    ior.integer = (decltype(ior.integer))dlsym(lib, "IOReportSimpleGetIntegerValue");
+    ior.name = (decltype(ior.name))dlsym(lib, "IOReportChannelGetChannelName");
+    ior.unit = (decltype(ior.unit))dlsym(lib, "IOReportChannelGetUnitLabel");
+    if (!ior.copyGroup || !ior.subscribe || !ior.sample || !ior.delta || !ior.integer || !ior.name || !ior.unit) return false;
+    CFDictionaryRef group = ior.copyGroup(CFSTR("Energy Model"), nullptr, 0, 0, 0);
+    if (!group) return false;
+    ior.channels = CFDictionaryCreateMutableCopy(kCFAllocatorDefault, 0, group);
+    CFRelease(group);
+    CFMutableDictionaryRef subscribed = nullptr;
+    ior.subscription = ior.subscribe(nullptr, ior.channels, &subscribed, 0, nullptr);
+    if (subscribed) CFRelease(subscribed);
+    ior.ok = ior.subscription != nullptr;
+    return ior.ok;
+}
+
+static double readGPUW(void) {
+    if (!setUpIOReport()) return -1;
+    CFDictionaryRef now = ior.sample(ior.subscription, ior.channels, nullptr);
+    const CFTimeInterval t = CACurrentMediaTime();
+    if (!now) return -1;
+    double result = -1;
+    if (ior.previous && t - ior.previousTime < 2) {
+        CFDictionaryRef d = ior.delta(ior.previous, now, nullptr);
+        double joules = 0;
+        bool found = false;
+        CFArrayRef items = d ? (CFArrayRef)CFDictionaryGetValue(d, CFSTR("IOReportChannels")) : nullptr;
+        for (CFIndex i = 0, n = items ? CFArrayGetCount(items) : 0; i < n; i++) {
+            CFDictionaryRef c = (CFDictionaryRef)CFArrayGetValueAtIndex(items, i);
+            CFStringRef name = ior.name(c);
+            if (!name || CFStringCompare(name, CFSTR("GPU Energy"), 0) != kCFCompareEqualTo) continue;
+            CFStringRef unit = ior.unit(c);
+            const double scale = !unit ? 0 : CFStringCompare(unit, CFSTR("nJ"), 0) == kCFCompareEqualTo ? 1e-9
+                               : CFStringCompare(unit, CFSTR("uJ"), 0) == kCFCompareEqualTo ? 1e-6
+                               : CFStringCompare(unit, CFSTR("mJ"), 0) == kCFCompareEqualTo ? 1e-3 : 0;
+            joules += (double)ior.integer(c, 0) * scale;
+            found = scale > 0;
+        }
+        if (d) CFRelease(d);
+        if (found) {
+            ior.joules[ior.next % 4] = joules;
+            ior.seconds[ior.next % 4] = t - ior.previousTime;
+            ior.next++;
+            double j = 0, s = 0;
+            for (int i = 0; i < 4 && i < ior.next; i++) { j += ior.joules[i]; s += ior.seconds[i]; }
+            if (s > 0) result = j / s;
+        }
+    } else {
+        ior.next = 0;   // first sample, or after a pause: start the average over
+    }
+    if (ior.previous) CFRelease(ior.previous);
+    ior.previous = now;
+    ior.previousTime = t;
+    return result;
+}
+
+static void startPowerSampling(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        dispatch_queue_t queue = dispatch_queue_create("lightscale.hud.power", DISPATCH_QUEUE_SERIAL);
+        dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
+        dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 0), 250 * NSEC_PER_MSEC, 25 * NSEC_PER_MSEC);
+        dispatch_source_set_event_handler(timer, ^{
+            if (CACurrentMediaTime() - lastDrawn.load() > 2) return;   // HUD off: no reads
+            double system = readSMCW();
+            if (system < 0) system = readBatteryW();
+            const double gpu = readGPUW();
+            os_unfair_lock_lock(&powerLock);
+            systemW = system;
+            gpuW = gpu;
+            os_unfair_lock_unlock(&powerLock);
+        });
+        dispatch_resume(timer);
+        static dispatch_source_t keep;   // lives as long as the process
+        keep = timer;
+    });
+}
+
 extern "C" void lsfgHudPublish(const LSFGHudSnapshot *s) {
-    const double w = readPowerW();
     os_unfair_lock_lock(&snapLock);
     snap = *s;
     haveSnap = true;
-    powerW = w;
     os_unfair_lock_unlock(&snapLock);
 }
 
@@ -106,9 +257,9 @@ static void setUp(id<MTLDevice> device) {
 
 // Where one game frame's GPU time goes: the game itself, the DLSS replacement, LSFG, and the overlay's display pass,
 // drawn as one bar against the frame's time budget (the game's frame interval). The running totals are sampled
-// every 100 ms and averaged over the last 30 seconds, so the bar is steady; the average starts over when a setting
+// every 100 ms and averaged over the last 2 seconds, so the bar is steady; the average starts over when a setting
 // changes, so it always describes the settings on screen.
-enum { kParts = 4, kSamples = 301 };
+enum { kParts = 4, kSamples = 21 };   // 2 s of 100 ms samples
 static const ImVec4 kPartColor[kParts] = {
     ImVec4(0.45f, 0.62f, 1.00f, 1.0f),   // game
     ImVec4(0.80f, 0.50f, 1.00f, 1.0f),   // DLSS replacement
@@ -203,8 +354,10 @@ static void drawHUD(void) {
     os_unfair_lock_lock(&snapLock);
     const LSFGHudSnapshot s = snap;
     const bool have = haveSnap;
-    const double watts = powerW;
     os_unfair_lock_unlock(&snapLock);
+    os_unfair_lock_lock(&powerLock);
+    const double watts = systemW, gpuWatts = gpuW;
+    os_unfair_lock_unlock(&powerLock);
 
     const ImGuiIO &io = ImGui::GetIO();
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 8, 8), ImGuiCond_Always, ImVec2(1, 0));
@@ -226,7 +379,7 @@ static void drawHUD(void) {
     const float total = c.part[0] + c.part[1] + c.part[2] + c.part[3];
     if (c.budget > 0) {
         char span[24];
-        snprintf(span, sizeof span, c.seconds < 29.5f ? "avg %.0f s" : "avg 30 s", c.seconds);
+        snprintf(span, sizeof span, c.seconds < 1.95f ? "avg %.1f s" : "avg 2 s", c.seconds);
         line(nullptr, "Frame cost", kDim, "%s", span);
         costBar(c);
         char name[48];
@@ -242,6 +395,7 @@ static void drawHUD(void) {
 
     line(nullptr, "Latency", kText, "+%.0f ms", s.queuedMs);
     if (watts > 0) line(nullptr, "Power", s.thermal >= 2 ? kBad : kText, s.thermal >= 2 ? "%.1f W throttling" : "%.1f W", watts);
+    if (gpuWatts >= 0) line(nullptr, "GPU power", kText, "%.1f W", gpuWatts);
     line(nullptr, "Memory", kText, "%.1f GB", s.memoryMB / 1024);
     if (s.refreshHz > 0 && s.screenFps >= s.refreshHz * 0.93) line(nullptr, "Limit", kGood, "display %.0f Hz", s.refreshHz);
     else if (c.budget > 0 && total > c.budget * 0.9f) line(nullptr, "Limit", kWarn, "GPU");
@@ -259,6 +413,8 @@ extern "C" void lsfgHudEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, fl
     io.DisplaySize = ImVec2(target.width / scale, target.height / scale);
     io.DisplayFramebufferScale = ImVec2(scale, scale);
     const CFTimeInterval now = CACurrentMediaTime();
+    lastDrawn.store(now);
+    startPowerSampling();
     io.DeltaTime = last > 0 ? (float)fmin(fmax(now - last, 1e-4), 0.1) : 1.0f / 60;
     last = now;
     sampleCost(now);

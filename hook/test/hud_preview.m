@@ -6,6 +6,7 @@
 #import <Metal/Metal.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 #import "../unix/lsfg_hud.h"
 
@@ -31,7 +32,8 @@ int main(int argc, char **argv) {
     @autoreleasepool {
         const char *out = argc > 1 ? argv[1] : "hud_preview.png";
         const int w = 1200, h = 760;
-        const float scale = 2;
+        // HUD_SCALE: the HUD's size setting (the hook multiplies the display's pixels per point by it)
+        const float scale = 2 * (getenv("HUD_SCALE") ? (float)atof(getenv("HUD_SCALE")) : 1);
         id<MTLDevice> device = MTLCreateSystemDefaultDevice();
         MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
                                                                                      width:w height:h mipmapped:NO];

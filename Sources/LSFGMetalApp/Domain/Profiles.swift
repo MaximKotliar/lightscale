@@ -26,10 +26,12 @@ struct GameProfile: Codable, Equatable, Sendable {
     var scalerPerformance = false
     /// Lightscale's performance HUD in the game (fps, frame times, GPU time of each stage, latency, power).
     var hud = false
+    /// The HUD's size: 1 is the Metal HUD's.
+    var hudScale = 1.0
 
     init(enabled: Bool = true, multiplier: Int = 2, performance: Bool = true, flowScale: Double = 1.0, bufferMs: Double = 8.0, gptk: String? = nil,
          upscaler: String = "metalfx", nssQuality: String = "mid", scaler: String = "off", scalerSharpness: Double = 0.5,
-         scalerPerformance: Bool = false, hud: Bool = false) {
+         scalerPerformance: Bool = false, hud: Bool = false, hudScale: Double = 1.0) {
         self.enabled = enabled
         self.multiplier = multiplier
         self.performance = performance
@@ -42,6 +44,7 @@ struct GameProfile: Codable, Equatable, Sendable {
         self.scalerSharpness = scalerSharpness
         self.scalerPerformance = scalerPerformance
         self.hud = hud
+        self.hudScale = hudScale
     }
 
     // Missing keys (older files) fall back to defaults instead of discarding the profile.
@@ -60,6 +63,7 @@ struct GameProfile: Codable, Equatable, Sendable {
         scalerSharpness = try c.decodeIfPresent(Double.self, forKey: .scalerSharpness) ?? d.scalerSharpness
         scalerPerformance = try c.decodeIfPresent(Bool.self, forKey: .scalerPerformance) ?? d.scalerPerformance
         hud = try c.decodeIfPresent(Bool.self, forKey: .hud) ?? d.hud
+        hudScale = try c.decodeIfPresent(Double.self, forKey: .hudScale) ?? d.hudScale
     }
 
     /// Off / 2x / 4x as one value (0, 1, 2) for the slider.

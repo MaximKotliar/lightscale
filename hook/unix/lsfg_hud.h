@@ -38,7 +38,7 @@ extern "C" {
 #endif
 // Implemented by the hook: the totals so far.
 void lsfgHudReadTotals(LSFGHudTotals *totals);
-// Once a second (stats timer). Also reads the Mac's power draw.
+// Once a second (stats timer). The HUD reads power itself, every 250 ms while it draws.
 void lsfgHudPublish(const LSFGHudSnapshot *snapshot);
 // Every frame interval as the display showed it, and every interval between the game's own frames.
 void lsfgHudScreenFrame(float ms);

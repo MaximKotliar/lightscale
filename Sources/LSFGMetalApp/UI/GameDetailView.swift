@@ -201,13 +201,20 @@ private struct HUDCard: View {
 
     var body: some View {
         Card(title: "Performance HUD") {
-            SettingRow(title: "Show in game", caption: "In the game's top-right corner: fps on screen and the game's own, frame pacing, and where an average frame's GPU time goes (game, DLSS replacement, frame generation, display scaling) against its time budget. Averaged over 30 seconds, restarted when a setting changes.") {
+            SettingRow(title: "Show in game", caption: "In the game's top-right corner: fps on screen and the game's own, frame pacing, and where an average frame's GPU time goes (game, DLSS replacement, frame generation, display scaling) against its time budget. Averaged over 2 seconds, restarted when a setting changes.") {
                 Toggle("Show in game", isOn: Binding(get: { model.profile(for: game).hud }, set: { on in
                     var p = model.profile(for: game)
                     p.hud = on
                     model.setProfile(p, for: game)
                 }))
                 .labelsHidden()
+            }
+            if model.profile(for: game).hud {
+                SliderRow(title: "Size", value: Binding(get: { model.profile(for: game).hudScale }, set: { scale in
+                    var p = model.profile(for: game)
+                    p.hudScale = scale
+                    model.setProfile(p, for: game)
+                }), range: 0.75...2, step: 0.25) { "\(Int(($0 * 100).rounded()))%" }
             }
         }
     }

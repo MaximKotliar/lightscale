@@ -76,6 +76,7 @@ The hook reads them when the game starts, matching on the exe name. These enviro
 | `LSFG_FLOW_SCALE` | 1.0 | Motion-estimation resolution, 0.25–1.0 |
 | `LSFG_BUFFER_MS` | 8 | Scheduling headroom: higher is smoother, lower has less lag |
 | `LSFG_HUD=1` | off | Performance HUD in the game (the profile's `hud`) |
+| `LSFG_HUD_SCALE=1.5` | 1 | The HUD's size, 0.5–3 (the profile's `hudScale`) |
 | `LSFG_TRACE=1` | off | Per-frame timing for the first frames |
 | `LSFG_LOG` | `~/Library/Logs/Lightscale.log` | Log file; every second it records presents, generated frames, on-screen fps, frame-time spread and drops; every 10 s the process's memory footprint |
 

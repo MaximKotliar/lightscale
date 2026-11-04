@@ -275,9 +275,9 @@ static void trackPresented(id<CAMetalDrawable> d) {
 // upscaler: 0 MetalFX (as the game asked), 1 NSS in its place. nssQuality: 0 low, 1 mid, 2 high, 3 fast (NSSQuality's values).
 // scaler (Lossless Scaling's spatial upscalers, lss-metal): 0 off, 1 LS1, 2 FSR, 3 BCAS, 4 bicubic, 5 nearest;
 // the overlay then shows the game's frames scaled to the window. scalerSharpness 0-1, scalerPerformance: LS1's
-// single-pass variant.
+// single-pass variant. hudScale: the HUD's size, 1 = Metal HUD-like.
 static struct { BOOL enabled, performance; int multiplier; float flowScale, bufferMs; int upscaler, nssQuality;
-                int scaler; float scalerSharpness; BOOL scalerPerformance; BOOL hud; } config = { YES, YES, 2, 1.0f, 8.0f, 0, 1, 0, 0.5f, NO, NO };
+                int scaler; float scalerSharpness; BOOL scalerPerformance; BOOL hud; float hudScale; } config = { YES, YES, 2, 1.0f, 8.0f, 0, 1, 0, 0.5f, NO, NO, 1.0f };
 static int scalerMode(NSString *s) {
     NSArray *names = @[@"off", @"ls1", @"fsr", @"bcas", @"bicubic", @"nearest"];
     NSUInteger i = [names indexOfObject:s.lowercaseString];
@@ -300,6 +300,7 @@ static void applyProfile(NSDictionary *p) {
     if ([p[@"scalerSharpness"] isKindOfClass:NSNumber.class]) config.scalerSharpness = [p[@"scalerSharpness"] floatValue];
     if ([p[@"scalerPerformance"] isKindOfClass:NSNumber.class]) config.scalerPerformance = [p[@"scalerPerformance"] boolValue];
     if ([p[@"hud"] isKindOfClass:NSNumber.class]) config.hud = [p[@"hud"] boolValue];
+    if ([p[@"hudScale"] isKindOfClass:NSNumber.class]) config.hudScale = [p[@"hudScale"] floatValue];
 }
 
 // The running .exe as a Unix path, sent by the PE side when it loads (nil until then).
@@ -323,7 +324,7 @@ static NSString *gameProfilePath(void) {
 static void loadConfig(void) {
     config.enabled = YES; config.performance = YES; config.multiplier = 2;
     config.flowScale = 1.0f; config.bufferMs = 8.0f; config.upscaler = 0; config.nssQuality = 1;
-    config.scaler = 0; config.scalerSharpness = 0.5f; config.scalerPerformance = NO; config.hud = NO;
+    config.scaler = 0; config.scalerSharpness = 0.5f; config.scalerPerformance = NO; config.hud = NO; config.hudScale = 1.0f;
     NSData *data = [NSData dataWithContentsOfFile:profilesPath()];
     NSDictionary *root = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
     NSString *exe = (exePath.lastPathComponent ?: NSProcessInfo.processInfo.processName).lowercaseString;
@@ -340,7 +341,7 @@ static void loadConfig(void) {
     static dispatch_once_t warned;
     dispatch_once(&warned, ^{
         NSMutableArray *set = [NSMutableArray array];
-        for (NSString *name in @[@"LSFG_FG", @"LSFG_PERFORMANCE", @"LSFG_FLOW_SCALE", @"LSFG_BUFFER_MS", @"LSFG_MULTIPLIER", @"LSFG_UPSCALER", @"LSFG_NSS_QUALITY", @"LSFG_SCALER", @"LSFG_SCALER_SHARPNESS", @"LSFG_HUD"])
+        for (NSString *name in @[@"LSFG_FG", @"LSFG_PERFORMANCE", @"LSFG_FLOW_SCALE", @"LSFG_BUFFER_MS", @"LSFG_MULTIPLIER", @"LSFG_UPSCALER", @"LSFG_NSS_QUALITY", @"LSFG_SCALER", @"LSFG_SCALER_SHARPNESS", @"LSFG_HUD", @"LSFG_HUD_SCALE"])
             if (getenv(name.UTF8String)) [set addObject:name];
         if (set.count) lsfg_log(@"environment overrides the profile (the app can't change these): %@", [set componentsJoinedByString:@", "]);
     });
@@ -355,6 +356,8 @@ static void loadConfig(void) {
     if ((v = getenv("LSFG_SCALER"))) config.scaler = scalerMode(@(v));
     if ((v = getenv("LSFG_SCALER_SHARPNESS"))) config.scalerSharpness = (float)atof(v);
     if ((v = getenv("LSFG_HUD"))) config.hud = v[0] != '0';
+    if ((v = getenv("LSFG_HUD_SCALE"))) config.hudScale = (float)atof(v);
+    config.hudScale = isfinite(config.hudScale) ? fminf(fmaxf(config.hudScale, 0.5f), 3.0f) : 1.0f;
     config.scalerSharpness = fminf(fmaxf(config.scalerSharpness, 0.0f), 1.0f);
     config.multiplier = MAX(2, MIN(config.multiplier, kMaxGenerated + 1));
     config.flowScale = fminf(fmaxf(config.flowScale, 0.25f), 1.0f);
@@ -378,7 +381,9 @@ static BOOL traceOn(void);
 static void applyConfigChanges(void) {
     typeof(config) before = config;
     loadConfig();
-    if (memcmp(&before, &config, sizeof config) != 0) atomic_fetch_add(&totalSettingsChanges, 1);
+    __typeof__(config) measured = before;   // the HUD's size doesn't change what it measures
+    measured.hudScale = config.hudScale;
+    if (memcmp(&measured, &config, sizeof config) != 0) atomic_fetch_add(&totalSettingsChanges, 1);
     if (config.enabled != before.enabled) {
         atomic_store(&fgOn, config.enabled);
         lsfg_log(@"frame generation switched %s", config.enabled ? "on" : "off");
@@ -824,7 +829,7 @@ static void presentSlot(int slot, int generated, CFTimeInterval completedAt) {
         const float pixelsPerPoint = points > 0 ? (float)(dst.width / points) : 1.0f;
         static bool logged;
         if (!logged) { logged = true; lsfg_log(@"HUD: drawing on %lux%lu at %.2f px/pt", (unsigned long)dst.width, (unsigned long)dst.height, pixelsPerPoint); }
-        lsfgHudEncode(cb, dst, pixelsPerPoint);
+        lsfgHudEncode(cb, dst, pixelsPerPoint * config.hudScale);
     }
     trackPresented(drawable);
     [cb presentDrawable:drawable];
