@@ -52,10 +52,10 @@ void lsfgHudGameFrame(float ms);
 // Returns a short name for the log. Any thread.
 const char *lsfgHudSetColorSpace(CGColorSpaceRef space);
 // Draws into `target` on `cb` (display link thread only). `scale`: pixels per point. `stats`: the performance HUD.
-// `badgeAlpha` > 0: the "Lightscale" badge that shows it's working, at that opacity, with `badgeDetail` under it
-// (what's on, e.g. "Frame generation 2× · LS1"; NULL or "": none).
+// `badgeAlpha` > 0: the Lightscale icon that shows it's working, at that opacity, `badgePoints` square (in the
+// HUD's points, so divide by the HUD's size setting for a fixed size).
 void lsfgHudEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, float scale, bool stats, float badgeAlpha,
-                   const char *badgeDetail);
+                   float badgePoints);
 #ifdef __cplusplus
 }
 #endif

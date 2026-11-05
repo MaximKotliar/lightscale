@@ -77,9 +77,9 @@ int main(int argc, char **argv) {
             usleep(20000);
             id<MTLCommandBuffer> cb = [queue commandBuffer];
             if (frame == 59) [target replaceRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0 withBytes:pixels bytesPerRow:w * 4];
-            // HUD_BADGE=1: the "Lightscale" badge too, as in a game's first seconds
+            // HUD_BADGE=1: the Lightscale icon too, as in a game's first seconds
             const BOOL badge = getenv("HUD_BADGE") && atoi(getenv("HUD_BADGE"));
-            lsfgHudEncode(cb, target, scale, true, badge ? 1.0f : 0.0f, "Frame generation 2\u00d7 \u00b7 LS1");
+            lsfgHudEncode(cb, target, scale, true, badge ? 1.0f : 0.0f, 40 / (scale / 2));
             [cb commit];
             [cb waitUntilCompleted];
             if (cb.error) { fprintf(stderr, "GPU error: %s\n", cb.error.description.UTF8String); return 1; }

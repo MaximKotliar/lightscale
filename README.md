@@ -55,7 +55,7 @@ After that, Lightscale updates itself: when a new version comes out, it shows a 
    - **Display Scaling:** set the game to a lower resolution, then pick an upscaler here.
    - **Performance HUD:** turns the overlay on, with a size slider.
 5. **Play.** Start the game from Steam in CrossOver as usual. When frame generation, display scaling or the HUD is
-   on, a Lightscale badge shows in the top-left corner for the first 5 seconds, so you know it's working. You can
+   on, the Lightscale icon shows faintly in the bottom-left corner for the first 5 seconds, so you know it's working. You can
    change settings while the game runs, and they apply within a second.
 
 Tips:
