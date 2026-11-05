@@ -1,21 +1,80 @@
 # Lightscale
 
-*Working name.*
+Lightscale makes Windows games running in CrossOver on Apple silicon Macs smoother and sharper.
 
-A Mac app that makes Windows games running under CrossOver smoother and sharper on Apple silicon:
+![Lightscale's settings for The Last of Us Part II: frame generation at 2×, DLSS replaced with NSS](docs/screenshot.png)
 
-- **Frame generation:** Lossless Scaling's LSFG 3.1, running natively on Metal, inserts generated frames (2×–4×).
-  Needs your own copy of [Lossless Scaling on Steam](https://store.steampowered.com/app/993090/).
-- **Scaling, in any game:** run the game at a lower resolution and Lightscale scales its frames up to the window with
-  Lossless Scaling's own upscalers (LS1, FSR 1, BCAS, bicubic) or nearest neighbour, like Lossless Scaling does on
-  Windows. Works with or without frame generation.
-- **Neural upscaling:** in games that use DLSS (which Apple's Game Porting Toolkit turns into MetalFX), Arm's
-  [Neural Super Sampling](https://huggingface.co/Arm/neural-super-sampling) can replace MetalFX: a sharper, more stable
-  image at about the same GPU cost. ([Paper](https://huggingface.co/Arm/neural-super-sampling/blob/main/2025-neural-super-sampling.pdf),
-  [Arm's NSS guide](https://developer.arm.com/documentation/111009/latest/); the Metal port is
-  [nss-metal](https://github.com/MaximKotliar/nss-metal).)
+- **Frame generation:** generates extra frames between the game's own frames, for 2× or 4× the frame rate. It
+  uses Lossless Scaling's LSFG 3.1, running natively on Metal. Needs your own copy of
+  [Lossless Scaling on Steam](https://store.steampowered.com/app/993090/).
+- **Display scaling, in any game:** run the game at a lower resolution, and Lightscale scales each frame up to the
+  window with Lossless Scaling's upscalers (LS1, FSR 1, BCAS, bicubic) or nearest neighbour. Also needs Lossless
+  Scaling.
+- **Better DLSS:** in games with DLSS, Lightscale can use Arm's
+  [Neural Super Sampling](https://huggingface.co/Arm/neural-super-sampling) (NSS) instead of Apple's MetalFX. The
+  image is sharper and steadier, for about the same GPU time. Works without Lossless Scaling.
+- **Performance HUD:** an overlay with frame rate, frame times, GPU load, power and memory.
 
-## What it does
+## Requirements
+
+- A Mac with Apple silicon (M1 or later)
+- macOS 15 Sequoia or later
+- [CrossOver](https://www.codeweavers.com/crossover), with your games installed through Steam in a CrossOver bottle
+  (other games can be added by their `.exe`)
+- Optional: [Lossless Scaling](https://store.steampowered.com/app/993090/) from Steam, installed in a CrossOver bottle,
+  for frame generation and display scaling
+
+Lightscale works with 64-bit DirectX games. It leaves out games with anti-cheat, because changing them could get your
+account banned, and 32-bit games.
+
+## Install
+
+1. Download `Lightscale-<version>.zip` from the [latest release](https://github.com/MaximKotliar/lightscale/releases/latest).
+2. Unzip it and move **Lightscale** to your Applications folder.
+3. Open it. Lightscale isn't notarized by Apple, so the first time macOS refuses to open it. Go to **System Settings ›
+   Privacy & Security**, scroll down and click **Open Anyway** next to the message about Lightscale.
+
+After that, Lightscale updates itself: when a new version comes out, it shows a banner with an **Update** button.
+**Lightscale › Check for Updates…** checks right away.
+
+## Use
+
+1. **Check setup.** On first launch, Lightscale shows a checklist: Apple silicon, CrossOver, and optionally Lossless
+   Scaling. Fix anything marked red, then continue. **Check Setup…** (⇧⌘,) opens it again later.
+2. **Pick a game.** The sidebar lists the Steam games in all your CrossOver bottles. To add another game, click
+   **Add Game** and choose its `.exe`.
+3. **Click Install.** This puts Lightscale's hook in the game's folder. **Uninstall** removes it again. Quit the game
+   before you install or uninstall.
+4. **Choose settings.**
+   - **Frame rate:** 2× or 4× turns on frame generation. Off turns it off.
+   - **Mode:** *Performance* costs less GPU time; *Quality* looks better.
+   - **DLSS Replacement:** NSS or MetalFX, for games with DLSS. Turn DLSS on in the game's graphics settings too.
+   - **Display Scaling:** set the game to a lower resolution, then pick an upscaler here.
+   - **Performance HUD:** turns the overlay on, with a size slider.
+5. **Play.** Start the game from Steam in CrossOver as usual. You can change settings while the game runs, and they
+   apply within a second.
+
+Tips:
+
+- Frame generation works best when the game already runs at 40 fps or more. Cap the game's frame rate (for example
+  at 60) so that the frame rate stays steady.
+- If the Mac gets slower after a few minutes of play, it's probably heat. Set **Energy Mode** to **High Power** in
+  System Settings › Battery (or Energy) while you play.
+- After you update Lightscale, it may ask to update the hook in your games. Click **Update** when no game is running.
+
+The app keeps its data in `~/Library/Application Support/Lightscale`. The hook writes a log to
+`~/Library/Logs/Lightscale.log`, which helps when something doesn't work.
+
+## License
+
+Lightscale is MIT-licensed (see [LICENSE](LICENSE)). It's an independent project, not affiliated with Lossless
+Scaling, Arm, Apple or CodeWeavers. Lossless Scaling is not included: Lightscale uses the copy you bought. NSS
+ships with Arm's trained weights, which are licensed by Arm under the Arm AI Model Community License, not MIT. Using
+NSS means agreeing to its acceptable-use terms, which the app shows next to the NSS setting and under Help.
+
+# For developers
+
+## How it works
 
 Its data lives in `~/Library/Application Support/Lightscale` and the hook logs to `~/Library/Logs/Lightscale.log`. On first launch the app moves the data from the old `lsfg-metal` folder and leaves a link there, so bottles set up before the rename keep working.
 
@@ -52,11 +111,8 @@ they were baked from; an update that changes a shader's structure needs a new bu
 
 Update one with `git -C vendor/nss-metal pull origin main` and commit the new pointer.
 
-NSS ships with Arm's trained weights (from nss-metal). They're licensed by Arm under the Arm AI Model Community
-License, not with the rest of the app: using NSS means agreeing to its acceptable-use terms, which the app shows next
-to the NSS setting and under Help.
 
-## How the hook works
+## The hook
 
 [hook/README.md](hook/README.md): how it gets into the game through Wine's builtin-DLL mechanism, inserts frames
 into D3DMetal's presentation, and swaps MetalFX for NSS.
