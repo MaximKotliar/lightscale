@@ -14,10 +14,16 @@ rm -rf "$ROOT/build/LSFG Metal.app"   # this build under its old name
 # display upscalers (DXBC) too with DXBC_COMPILER (dxbc_compiler from github.com/doitsujin/dxbc-spirv). BAKE=0: none.
 # The display upscaler ids are lss-metal's LSSKernels.ids.
 DXBC_IDS=133,134,137,138,139,140,141,142,143,144,145,146,147,148,149,150,151,152,153,154,155,156,157,158,159,160,161,247
+# REUSE_FROM=PATH/Lightscale.app: take the baked kernels and GPTK from that build (a previous release) instead of
+# baking them and copying GPTK from this Mac: for CI, which has neither Lossless.dll nor GPTK.
 rm -rf "$ROOT/hook/build/baked"
 BAKE_ARGS=(--out "$ROOT/hook/build/baked")
 [ -n "${DXBC_COMPILER:-}" ] && BAKE_ARGS+=(--dxbc-compiler "$DXBC_COMPILER" --dxbc-ids "$DXBC_IDS")
-if [ "${BAKE:-1}" = 0 ]; then
+if [ -n "${REUSE_FROM:-}" ]; then
+    [ -f "$REUSE_FROM/Contents/Resources/Hook/baked/dxbc-manifest.json" ] || { echo "no baked kernels in $REUSE_FROM" >&2; exit 1; }
+    cp -R "$REUSE_FROM/Contents/Resources/Hook/baked" "$ROOT/hook/build/baked"
+    echo "baked kernels reused from $REUSE_FROM"
+elif [ "${BAKE:-1}" = 0 ]; then
     echo "building without pre-baked kernels (BAKE=0)"
 elif swift run --package-path "$ROOT/vendor/lsfg-metal" -c release -q lsfg-metal bake "${BAKE_ARGS[@]}" >/dev/null 2>&1; then
     if [ -n "${DXBC_COMPILER:-}" ]; then echo "baked kernels included (frame generation, display scaling)"
@@ -44,7 +50,14 @@ cp -R "$ROOT/hook/build/NSSWeights" "$APP/Contents/Resources/Hook/NSSWeights"   
 # (folders separated by ":").
 GPTK_SOURCES=${GPTK_SOURCES:-"$HOME/Applications/CrossOver-GPTK-3.0-backup/apple_gptk:$HOME/Applications/GPTK-4.0b3/lib"}
 IFS=: read -ra GPTK_DIRS <<< "$GPTK_SOURCES"
-for src in "${GPTK_DIRS[@]}"; do
+if [ -n "${REUSE_FROM:-}" ]; then
+    GPTK_DIRS=()
+    if [ -d "$REUSE_FROM/Contents/Resources/GPTK" ]; then
+        ditto "$REUSE_FROM/Contents/Resources/GPTK" "$APP/Contents/Resources/GPTK"
+        echo "GPTK reused: $(ls "$APP/Contents/Resources/GPTK" | tr '\n' ' ')"
+    fi
+fi
+for src in ${GPTK_DIRS[@]+"${GPTK_DIRS[@]}"}; do
     plist="$src/external/D3DMetal.framework/Versions/A/Resources/Info.plist"
     [ -f "$plist" ] && [ -d "$src/wine" ] || continue
     v=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$plist")

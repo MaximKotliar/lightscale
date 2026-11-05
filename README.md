@@ -150,6 +150,22 @@ they were baked from; an update that changes a shader's structure needs a new bu
 Update one with `git -C vendor/nss-metal pull origin main` and commit the new pointer.
 
 
+## Release
+
+Push a version tag and GitHub Actions ([release.yml](.github/workflows/release.yml)) builds, signs and publishes it;
+installed apps then offer the update:
+
+```bash
+echo 0.5 > VERSION && git commit -am "Version 0.5"
+git tag -a v0.5 -m "What's new in 0.5"   # the tag's message becomes the release notes
+git push --follow-tags
+```
+
+The runner has no Lossless.dll and no GPTK, so it takes the baked kernels and GPTK from the previous release.
+When Lossless Scaling changes its shaders, or GPTK should change, release from a Mac that has them instead:
+`DXBC_COMPILER=… scripts/release.sh`. The signing key is the `LIGHTSCALE_SIGNING_KEY` secret (a copy of
+`~/.config/lightscale/update-signing-key`); installed apps accept only updates signed with it.
+
 ## The hook
 
 [hook/README.md](hook/README.md): how it gets into the game through Wine's builtin-DLL mechanism, inserts frames

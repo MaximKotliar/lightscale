@@ -1,0 +1,117 @@
+# Builds and publishes a release when a version tag is pushed:
+#   echo 0.5 > VERSION && git commit -am "Version 0.5" && git tag -a v0.5 -m "release notes" && git push --follow-tags
+# The tag's message becomes the release notes (a lightweight tag: the commit subjects since the previous release).
+#
+# The runner has neither Lossless.dll nor Apple's GPTK, so the baked kernels and GPTK come from the previous release
+# (its signature checked first). When Lossless Scaling changes its shaders or GPTK should change, release once from a
+# Mac with scripts/release.sh; later tags reuse what that release carries.
+#
+# Run it by hand (Actions > Release > Run workflow) for a dry run: it builds and signs, and keeps the zip as a
+# workflow artifact instead of publishing.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PUBLISH: ${{ github.event_name == 'push' && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Check the version
+        run: |
+          git fetch --force --tags origin   # checkout turns an annotated tag into a lightweight one
+          V=$(tr -d '[:space:]' < VERSION)
+          echo "V=$V" >> "$GITHUB_ENV"
+          if [ "$PUBLISH" = 1 ] && [ "$GITHUB_REF_NAME" != "v$V" ]; then
+            echo "::error::tag $GITHUB_REF_NAME doesn't match VERSION ($V)"; exit 1
+          fi
+
+      - name: Install tools
+        run: |
+          brew install llvm lld@21
+          xcodebuild -downloadComponent MetalToolchain || true   # Xcode 26+: the metal compiler is separate
+          xcrun -f metal
+
+      - name: Signing key
+        env:
+          KEY: ${{ secrets.LIGHTSCALE_SIGNING_KEY }}
+        run: |
+          [ -n "$KEY" ] || { echo "::error::secret LIGHTSCALE_SIGNING_KEY is missing"; exit 1; }
+          umask 077
+          printf '%s' "$KEY" > "$RUNNER_TEMP/update-signing-key"
+          echo "LIGHTSCALE_SIGNING_KEY=$RUNNER_TEMP/update-signing-key" >> "$GITHUB_ENV"
+
+      - name: Previous release (baked kernels and GPTK)
+        run: |
+          PREV=$(gh release list --exclude-drafts --exclude-pre-releases --limit 30 --json tagName -q '.[].tagName' \
+                 | grep -vx "$GITHUB_REF_NAME" | head -1)
+          [ -n "$PREV" ] || { echo "::error::no previous release to take the baked kernels from"; exit 1; }
+          echo "from $PREV"
+          mkdir -p "$RUNNER_TEMP/prev"
+          gh release download "$PREV" --pattern 'Lightscale-*.zip*' --dir "$RUNNER_TEMP/prev"
+          ZIP=$(ls "$RUNNER_TEMP"/prev/Lightscale-*.zip)
+          swift scripts/sign-update.swift verify "$ZIP"
+          ditto -x -k "$ZIP" "$RUNNER_TEMP/prev/app"
+          echo "REUSE_FROM=$RUNNER_TEMP/prev/app/Lightscale.app" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          scripts/build-app.sh
+          APP=build/Lightscale.app
+          [ -f "$APP/Contents/Resources/Hook/baked/dxbc-manifest.json" ] || { echo "::error::no baked kernels"; exit 1; }
+          [ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Contents/Info.plist")" = "$V" ]
+
+      - name: Test
+        run: swift test
+
+      - name: Zip and sign
+        run: |
+          ZIP=build/Lightscale-$V.zip
+          ditto -c -k --sequesterRsrc --keepParent build/Lightscale.app "$ZIP"
+          swift scripts/sign-update.swift sign "$ZIP"
+          swift scripts/sign-update.swift verify "$ZIP"
+          echo "ZIP=$ZIP" >> "$GITHUB_ENV"
+
+      - name: Publish
+        if: env.PUBLISH == '1'
+        run: |
+          NOTES=$(git for-each-ref "refs/tags/$GITHUB_REF_NAME" --format='%(contents:subject)%0a%0a%(contents:body)')
+          if [ "$(git cat-file -t "$GITHUB_REF_NAME")" != tag ] || [ -z "$NOTES" ]; then
+            PREV=$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)
+            NOTES=$(git log --format='- %s' ${PREV:+"$PREV..$GITHUB_REF_NAME"})
+          fi
+          printf '%s\n' "$NOTES" > "$RUNNER_TEMP/notes.md"
+          gh release create "$GITHUB_REF_NAME" "$ZIP" "$ZIP.sig" --verify-tag --title "Lightscale $V" \
+            --notes-file "$RUNNER_TEMP/notes.md"
+
+      - name: Keep the dry run's zip
+        if: env.PUBLISH != '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lightscale-${{ env.V }}-dry-run
+          path: |
+            ${{ env.ZIP }}
+            ${{ env.ZIP }}.sig
+          retention-days: 7
+
+      - name: Remove the key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/update-signing-key"
