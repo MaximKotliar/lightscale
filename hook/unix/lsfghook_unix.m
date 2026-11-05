@@ -292,6 +292,9 @@ static int scalerMode(NSString *s) {
     return i == NSNotFound ? 0 : (int)i;
 }
 
+// Settings a capture plan runs (lsfg_capture.m), on top of the profile; nil otherwise.
+static NSDictionary *configOverride;
+
 static void applyProfile(NSDictionary *p) {
     if (![p isKindOfClass:NSDictionary.class]) return;
     if ([p[@"enabled"] isKindOfClass:NSNumber.class]) config.enabled = [p[@"enabled"] boolValue];
@@ -344,6 +347,7 @@ static void loadConfig(void) {
     NSString *gamePath = gameProfilePath();
     NSData *gameData = gamePath ? [NSData dataWithContentsOfFile:gamePath] : nil;
     if (gameData) applyProfile([NSJSONSerialization JSONObjectWithData:gameData options:0 error:nil]);
+    if (configOverride) applyProfile(configOverride);
     // Environment variables (e.g. in the bottle's cxbottle.conf) win over profiles.json, so say so:
     // they also pin those settings against live changes from the app.
     static dispatch_once_t warned;
@@ -419,6 +423,8 @@ static void reloadConfigIfChanged(void) {
     seen = signature;
     applyConfigChanges();
 }
+
+#include "lsfg_capture.m"   // reference frames and capture plans
 
 static BOOL envOn(const char *name, BOOL fallback) {
     const char *v = getenv(name);
@@ -873,6 +879,7 @@ static void timingBracket(id<MTLCommandBuffer> cb, int slot, BOOL after, id<MTLT
         [blit endEncoding];
     }
     const float badge = badgeAlpha();
+    if (show.index < 0) captureEncode(kCaptureFinal, cb, dst, overlay.colorspace);   // a plan's frames: as shown, before the HUD
     if (config.hud || badge > 0) {
         const double points = atomic_load(&overlayPointsWide);
         const float pixelsPerPoint = points > 0 ? (float)(dst.width / points) : 1.0f;
@@ -1060,8 +1067,6 @@ static void lsfgTimingCollect(int slot) {
     atomic_fetch_add(&totalLsfgFrames, 1);
 }
 
-#include "lsfg_capture.m"
-
 static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, void (^targetRead)(id<MTLCommandBuffer>)) {
     int state = atomic_load(&fgState);
     if (state == 0) fgCreateContext(cb.device, target);
@@ -1121,7 +1126,7 @@ static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, void (^targ
     if (fgRunLSFG) [blit copyFromTexture:target toTexture:input];
     if (capture) [blit copyFromTexture:target toTexture:realRing[slot]];
     [blit endEncoding];
-    captureEncode(cb, target, fgLayer);   // reference frames, on request (lsfg_capture.m)
+    captureEncode(kCaptureGame, cb, target, fgLayer.colorspace);   // reference frames, on request (lsfg_capture.m)
     if (targetRead) targetRead(cb);
     int generated = fgRunLSFG ? bridge.encode(fgContext, (__bridge const void *)cb) : 0;
     if (priming) generated = 0;

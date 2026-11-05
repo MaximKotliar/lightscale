@@ -116,3 +116,19 @@ containing `COUNT [EVERY_MS]`, picked up by the stats timer. The frame is copied
 command buffer and written on a background queue once the GPU is done, so the game doesn't wait: BGRA8/RGBA8 as
 8-bit PNG, RGB10A2/BGR10A2 as 16-bit PNG, RGBA16F as half-float OpenEXR, each tagged with the layer's colour space.
 
+**Capture plans** (a developer tool, not in the app): with `~/Library/Application Support/Lightscale/capture-plan.json`
+present, Control-Option-C runs it instead. Each variant's settings go on top of the game's profile (same keys,
+plus `name`); after `settleMs` the next `frames` real frames are saved as shown, after upscaling and before the HUD
+and badge, into `captures/<game>-<date>/<name>-<n>.png`, with `plan.txt` listing what each variant ran. Your settings
+come back at the end (a "Glass" sound; "Basso" if a variant got no frames). Example:
+
+```json
+{"frames": 3, "settleMs": 2000, "variants": [
+  {"name": "metalfx", "upscaler": "metalfx", "scaler": "off"},
+  {"name": "nss-mid", "upscaler": "nss", "nssQuality": "mid", "scaler": "off"},
+  {"name": "nss+nis", "upscaler": "nss", "nssQuality": "mid", "scaler": "nis", "scalerSharpness": 0.25}]}
+```
+
+Display-scaling variants only differ from the rest when the game renders below the window's size. Stand still or
+pause, so the variants see the same scene.
+
