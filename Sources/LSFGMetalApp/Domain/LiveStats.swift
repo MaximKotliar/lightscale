@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// One second of the hook's own measurements (from ~/Library/Logs/Lightscale.log).
 struct LiveSample: Sendable, Identifiable {
@@ -42,7 +43,25 @@ enum LiveStats {
         let samples = lines.compactMap(parse)
         guard let lastPID = samples.last?.pid else { return Snapshot(modified: modified) }
         let process = lines.lazy.compactMap { $0.firstMatch(of: loaded) }.last { Int($0.pid) == lastPID }.map { String($0.name) }
+            ?? processName(pid: lastPID, in: handle)
         return Snapshot(process: process, samples: Array(samples.filter { $0.pid == lastPID }.suffix(count)), modified: modified)
+    }
+
+    /// Which exe a process is, once found. A game logs its "loaded" line once at start, and after a few minutes of
+    /// play it's no longer in the tail read above.
+    private static let names = Mutex<[Int: String]>([:])
+
+    /// The process's exe from its "loaded" line anywhere in the log (read once per process, then remembered).
+    private static func processName(pid: Int, in handle: FileHandle) -> String? {
+        if let known = names.withLock({ $0[pid] }) { return known }
+        try? handle.seek(toOffset: 0)
+        let text = String(decoding: (try? handle.readToEnd()) ?? Data(), as: UTF8.self)
+        let marker = "pid \(pid)] lsfghook loaded in "
+        guard let line = text.split(separator: "\n").last(where: { $0.contains(marker) }),
+              let match = line.firstMatch(of: loaded) else { return nil }
+        let name = String(match.name)
+        names.withLock { $0[pid] = name }
+        return name
     }
 
     private static var loaded: Regex<(Substring, pid: Substring, name: Substring)> {
