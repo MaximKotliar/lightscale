@@ -256,7 +256,7 @@ final class AppModel {
 
     func runningGame() -> Game? { games.first { liveStats(for: $0) != nil } }
 
-    /// Polls the hook's log while the window is open.
+    /// Polls the hook's log once a second, from launch.
     func followLive() async {
         while !Task.isCancelled {
             live = await Task.detached(priority: .utility) { LiveStats.read() }.value

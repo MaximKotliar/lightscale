@@ -19,6 +19,9 @@ struct LSFGMetalApp: App {
                 await model.installAppUpdate()
             }
         }
+        // Follows the hook's log for as long as the app runs, window or not: the HUD numbers, and Game Mode and the
+        // cursor fix while a game runs.
+        Task { @MainActor in await model.followLive() }
         _model = State(initialValue: model)
     }
 

@@ -31,7 +31,6 @@ struct ContentView: View {
             }
         }
         .task { await model.refresh() }
-        .task { await model.followLive() }
         .task { await model.followAppUpdates() }
         .sheet(isPresented: $model.showingSetup) { SetupSheet(model: model) }
         .alert(model.notice ?? "", isPresented: Binding(get: { model.notice != nil }, set: { if !$0 { model.notice = nil } })) {
