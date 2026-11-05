@@ -411,7 +411,9 @@ static void drawHUD(void) {
 // Blending then happens in the target's encoding, which only shifts the panel's translucency a little.
 enum ColorMode { kColorSDR, kColorPQ2020, kColorLinearSRGB, kColorLinear2020 };
 static std::atomic<int> colorMode{kColorSDR};
-static const float kSDRWhiteNits = 203;   // ITU-R BT.2408: SDR white in HDR
+// In PQ the HUD is drawn vivid rather than exact: its colours taken as Display P3 (wider than sRGB, as macOS's own
+// vivid UI) and white a bit above BT.2408's 203-nit SDR white, so it holds its own next to the game's HDR.
+static const float kHudWhiteNits = 300;
 
 extern "C" const char *lsfgHudSetColorSpace(CGColorSpaceRef space) {
     CFStringRef name = space ? CGColorSpaceCopyName(space) : NULL;
@@ -443,14 +445,19 @@ static ImU32 convertColor(ImU32 c, int mode) {
     float r = srgbToLinear(((c >> IM_COL32_R_SHIFT) & 0xFF) / 255.0f);
     float g = srgbToLinear(((c >> IM_COL32_G_SHIFT) & 0xFF) / 255.0f);
     float b = srgbToLinear(((c >> IM_COL32_B_SHIFT) & 0xFF) / 255.0f);
-    if (mode == kColorPQ2020 || mode == kColorLinear2020) {   // BT.709 -> BT.2020 primaries (BT.2087)
+    if (mode == kColorPQ2020) {   // Display P3 -> BT.2020 primaries
+        const float r2 = 0.7539f * r + 0.1986f * g + 0.0476f * b;
+        const float g2 = 0.0457f * r + 0.9418f * g + 0.0125f * b;
+        const float b2 = -0.0012f * r + 0.0176f * g + 0.9836f * b;
+        r = r2; g = g2; b = b2;
+    } else if (mode == kColorLinear2020) {   // BT.709 -> BT.2020 primaries (BT.2087)
         const float r2 = 0.6274f * r + 0.3293f * g + 0.0433f * b;
         const float g2 = 0.0691f * r + 0.9195f * g + 0.0114f * b;
         const float b2 = 0.0164f * r + 0.0880f * g + 0.8956f * b;
         r = r2; g = g2; b = b2;
     }
     if (mode == kColorPQ2020) {
-        r = linearToPQ(r * kSDRWhiteNits); g = linearToPQ(g * kSDRWhiteNits); b = linearToPQ(b * kSDRWhiteNits);
+        r = linearToPQ(r * kHudWhiteNits); g = linearToPQ(g * kHudWhiteNits); b = linearToPQ(b * kHudWhiteNits);
     }
     auto byte = [](float v) { return (ImU32)lroundf(fminf(fmaxf(v, 0), 1) * 255); };
     return (byte(r) << IM_COL32_R_SHIFT) | (byte(g) << IM_COL32_G_SHIFT) | (byte(b) << IM_COL32_B_SHIFT)
