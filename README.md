@@ -66,6 +66,10 @@ Tips:
 - If the Mac gets slower after a few minutes of play, it's probably heat. Set **Energy Mode** to **High Power** in
   System Settings › Battery (or Energy) while you play.
 - After you update Lightscale, it may ask to update the hook in your games. Click **Update** when no game is running.
+- **Reference frames:** press **⌃⌥C** (Control-Option-C) in the game to save the frame the game made, before
+  Lightscale changes anything, without lossy compression (**⌃⌥⇧C**: 10 frames in a row). A sound confirms it. The files
+  go to `~/Library/Application Support/Lightscale/captures`: 8-bit or 16-bit PNG, or OpenEXR for half-float frames, in
+  the game's colour space (HDR10 included). Works while frame generation, display scaling or the HUD is on.
 
 The app keeps its data in `~/Library/Application Support/Lightscale`. The hook writes a log to
 `~/Library/Logs/Lightscale.log`, which helps when something doesn't work.

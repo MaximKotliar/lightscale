@@ -1060,6 +1060,8 @@ static void lsfgTimingCollect(int slot) {
     atomic_fetch_add(&totalLsfgFrames, 1);
 }
 
+#include "lsfg_capture.m"
+
 static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, void (^targetRead)(id<MTLCommandBuffer>)) {
     int state = atomic_load(&fgState);
     if (state == 0) fgCreateContext(cb.device, target);
@@ -1119,6 +1121,7 @@ static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, void (^targ
     if (fgRunLSFG) [blit copyFromTexture:target toTexture:input];
     if (capture) [blit copyFromTexture:target toTexture:realRing[slot]];
     [blit endEncoding];
+    captureEncode(cb, target, fgLayer);   // reference frames, on request (lsfg_capture.m)
     if (targetRead) targetRead(cb);
     int generated = fgRunLSFG ? bridge.encode(fgContext, (__bridge const void *)cb) : 0;
     if (priming) generated = 0;
@@ -1606,6 +1609,7 @@ static void startStatsTimer(void) {
     timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
     dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), NSEC_PER_SEC, NSEC_PER_SEC / 10);
     dispatch_source_set_event_handler(timer, ^{
+        captureCheckRequest();
         NSMutableString *line = [NSMutableString string];
         long c[kCounterCount];
         for (int i = 0; i < kCounterCount; i++) {
@@ -1696,6 +1700,7 @@ __attribute__((constructor)) static void lsfg_unix_init(void) {
         installLayerHook();
         nssInstall();
         startStatsTimer();
+        dispatch_async(dispatch_get_main_queue(), ^{ captureInstallHotkey(); });   // once AppKit runs
     }
 }
 

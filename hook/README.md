@@ -106,3 +106,13 @@ otherwise MetalFX runs as usual. Either way it times the call for the log's `ups
 (shipped with nss-metal, under the Arm AI Model Community License; the app shows its acceptable-use terms) are
 installed to `~/Library/Application Support/Lightscale/nss/` (`LSFG_NSS_DIR` overrides it). `test/nss_perf.sh` drives a
 real Metal 4 MetalFX scaler with the hook loaded, without a game.
+
+## Reference frames
+
+`unix/lsfg_capture.m` saves the game's own frames, before frame generation, scaling and the HUD, for judging
+upscalers. Trigger: Control-Option-C in the game (Shift: 10 consecutive frames), seen through an AppKit local event
+monitor in Wine's Mac driver and kept from the game; or a file `~/Library/Application Support/Lightscale/capture`
+containing `COUNT [EVERY_MS]`, picked up by the stats timer. The frame is copied to a shared buffer on the game's
+command buffer and written on a background queue once the GPU is done, so the game doesn't wait: BGRA8/RGBA8 as
+8-bit PNG, RGB10A2/BGR10A2 as 16-bit PNG, RGBA16F as half-float OpenEXR, each tagged with the layer's colour space.
+

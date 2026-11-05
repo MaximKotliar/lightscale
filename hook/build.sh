@@ -52,7 +52,8 @@ for src in "${HUD_SRC[@]}"; do
 done
 clang -arch x86_64 -dynamiclib -O2 -Wall -fobjc-arc -mmacosx-version-min=14.0 -Wno-unguarded-availability-new \
     -I"$NSS/Sources/NSSMetal/include" \
-    -framework AppKit -framework Foundation -framework Metal -framework MetalFX -framework QuartzCore -framework IOKit -lc++ \
+    -framework AppKit -framework Foundation -framework Metal -framework MetalFX -framework QuartzCore -framework IOKit \
+    -framework ImageIO -framework UniformTypeIdentifiers -lc++ \
     -o "$OUT/lsfghook.so" unix/lsfghook_unix.m "$NSS/Sources/NSSMetal/NSSUpscaler.m" "${HUD_OBJ[@]}"
 "$NSS/scripts/build-metallib.sh" "$OUT/nss.metallib"
 # Arm's NSS weights with their license, notices and acceptable-use terms (the app installs them next to the kernels)
