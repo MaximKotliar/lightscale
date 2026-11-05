@@ -70,8 +70,10 @@ The app keeps its data in `~/Library/Application Support/Lightscale`. The hook w
 
 ## Tune by numbers
 
-Turn on **Performance HUD** for the game. It sits in the top-left corner and is drawn on the final image, after
+Turn on **Performance HUD** for the game. It sits in the top-right corner and is drawn on the final image, after
 frame generation and scaling, so its numbers are what reaches the screen.
+
+<img src="docs/hud.jpg" width="552" alt="The HUD in The Last of Us Part II: 120 fps on screen from 30 game fps with LSFG 4×, frame cost split into game 9.75 ms, NSS 0.70 ms, LSFG 1.47 ms and LS1 0.90 ms, limited by the 120 Hz display">
 
 | HUD line | What it tells you |
 |---|---|
@@ -118,7 +120,7 @@ Its data lives in `~/Library/Application Support/Lightscale` and the hook logs t
 - **Per-game profiles:** frame rate Off / 2× / 4×, performance or quality mode, motion detail and pacing buffer for each game. They're stored in each game's folder (`.lsfg/profile.json`, next to the proxy DLL), so every program the game runs shares them, and the hook picks up changes within a second, even mid-game.
 - **GPTK picker:** each game can name the Game Porting Toolkit version it should run with, and the app offers to switch CrossOver to it. CrossOver has one GPTK for all bottles, so a switch applies to every game and needs Steam closed. macOS asks once to let the app change CrossOver (App Management). `scripts/build-app.sh` bundles the versions it finds in `GPTK_SOURCES` (default: `~/Applications/CrossOver-GPTK-3.0-backup/apple_gptk` and `~/Applications/GPTK-4.0b3/lib`). They're never committed. A version CrossOver had that the app doesn't carry is saved to `~/Library/Application Support/Lightscale/gptk` before it's replaced.
 - **Upscaling:** two settings that stack. *DLSS Replacement* (games with DLSS) runs MetalFX or NSS in place of the game's DLSS. *Display Scaling* (any game) scales the finished frames up to the screen with Lossless Scaling's LS1, FSR, BCAS, bicubic or nearest.
-- **Performance HUD:** a per-game switch for an overlay the hook draws in the game's top-left corner, on the final image of every frame on screen (after frame generation and scaling, so it's never interpolated). It shows fps on screen and the game's own fps, a frame-time graph, GPU time for frame generation, the DLSS replacement and the display pass, added latency, GPU load, power draw and memory, and a line on what limits the frame rate. It's drawn with [Dear ImGui](https://github.com/ocornut/imgui) (MIT, `vendor/imgui`).
+- **Performance HUD:** a per-game switch for an overlay the hook draws in the game's top-right corner, on the final image of every frame on screen (after frame generation and scaling, so it's never interpolated). It shows fps on screen and the game's own fps, a frame-time graph, GPU time for frame generation, the DLSS replacement and the display pass, added latency, GPU load, power draw and memory, and a line on what limits the frame rate. It's drawn with [Dear ImGui](https://github.com/ocornut/imgui) (MIT, `vendor/imgui`).
 
 The app isn't sandboxed, because it edits CrossOver bottles and runs CrossOver's `wine`. It's built with the hardened runtime and no extra entitlements.
 
