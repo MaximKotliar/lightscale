@@ -3,6 +3,7 @@
 // interpolated or upscaled itself. The hook fills a snapshot once a second and reports frame
 // intervals as they happen; everything else lives in lsfg_hud.mm.
 #pragma once
+#import <CoreGraphics/CoreGraphics.h>
 #import <Metal/Metal.h>
 
 typedef struct {
@@ -46,6 +47,10 @@ void lsfgHudPublish(const LSFGHudSnapshot *snapshot);
 // Every frame interval as the display showed it, and every interval between the game's own frames.
 void lsfgHudScreenFrame(float ms);
 void lsfgHudGameFrame(float ms);
+// The colour space the HUD's target is shown in (the overlay's, which is the game's). In HDR (PQ or linear, sRGB
+// or BT.2020 primaries) the HUD converts its sRGB colours so they look as they do in SDR; nil or anything else: as is.
+// Returns a short name for the log. Any thread.
+const char *lsfgHudSetColorSpace(CGColorSpaceRef space);
 // Draws the HUD into `target` on `cb` (display link thread only). `scale`: pixels per point.
 void lsfgHudEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, float scale);
 #ifdef __cplusplus

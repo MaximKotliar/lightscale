@@ -35,6 +35,13 @@ int main(int argc, char **argv) {
         const int w = 1200, h = 760;
         // HUD_SCALE: the HUD's size setting (the hook multiplies the display's pixels per point by it)
         const float scale = 2 * (getenv("HUD_SCALE") ? (float)atof(getenv("HUD_SCALE")) : 1);
+        // HUD_COLOR=pq: the target is HDR10 (PQ, BT.2020), as with a game's HDR on; the PNG is tagged so, and
+        // macOS's colour management shows it as it would look on screen.
+        // HUD_COLOR=pq-raw: the same, without telling the HUD (how it looked before it converted its colours).
+        const char *mode = getenv("HUD_COLOR") ?: "";
+        const BOOL pq = !strncmp(mode, "pq", 2), raw = !strcmp(mode, "pq-raw");
+        CGColorSpaceRef space = CGColorSpaceCreateWithName(pq ? kCGColorSpaceITUR_2100_PQ : kCGColorSpaceSRGB);
+        printf("HUD colour: %s\n", lsfgHudSetColorSpace(pq && !raw ? space : NULL));
         id<MTLDevice> device = MTLCreateSystemDefaultDevice();
         MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
                                                                                      width:w height:h mipmapped:NO];
@@ -48,6 +55,7 @@ int main(int argc, char **argv) {
                 uint8_t *p = pixels + ((size_t)y * w + x) * 4;
                 const float t = (x + y) / 60.0f;
                 p[0] = (uint8_t)(90 + 60 * sinf(t)); p[1] = (uint8_t)(120 + 50 * sinf(t * 0.7f)); p[2] = (uint8_t)(150 + 80 * sinf(t * 0.3f)); p[3] = 255;
+                if (pq) p[0] = p[1] = p[2] = (uint8_t)(100 + 12 * sinf(t));   // grey around 50 nits in PQ
             }
         [target replaceRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0 withBytes:pixels bytesPerRow:w * 4];
 
@@ -75,7 +83,7 @@ int main(int argc, char **argv) {
             if (cb.error) { fprintf(stderr, "GPU error: %s\n", cb.error.description.UTF8String); return 1; }
         }
         [target getBytes:pixels bytesPerRow:w * 4 fromRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0];
-        CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        CGColorSpaceRef cs = space;
         CGContextRef ctx = CGBitmapContextCreate(pixels, w, h, 8, w * 4, cs, kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
         CGImageRef image = CGBitmapContextCreateImage(ctx);
         NSURL *url = [NSURL fileURLWithPath:@(out)];

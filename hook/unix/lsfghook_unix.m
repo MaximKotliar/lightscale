@@ -549,6 +549,25 @@ static void setOverlayHidden(BOOL hidden) {
 
 static void startDisplayLink(CAMetalLayer *layer);
 
+// The overlay draws in the game's pixel format and colour space (10-bit HDR10 when the game's HDR is on), and the
+// HUD converts its colours to match (main thread).
+static void matchGameColor(CAMetalLayer *o, CAMetalLayer *game) {
+    const BOOL changed = o.pixelFormat != game.pixelFormat || !CFEqual(o.colorspace ?: (CGColorSpaceRef)kCFNull, game.colorspace ?: (CGColorSpaceRef)kCFNull)
+        || o.wantsExtendedDynamicRangeContent != game.wantsExtendedDynamicRangeContent;
+    o.pixelFormat = game.pixelFormat;
+    o.colorspace = game.colorspace;
+    o.wantsExtendedDynamicRangeContent = game.wantsExtendedDynamicRangeContent;
+    static BOOL logged;
+    if (changed || !logged) {
+        logged = YES;
+        CFStringRef name = game.colorspace ? CGColorSpaceCopyName(game.colorspace) : NULL;
+        lsfg_log(@"overlay colour: format %lu, colour space %@, EDR %d -> HUD %s", (unsigned long)game.pixelFormat,
+                 name ? (__bridge NSString *)name : @"none", game.wantsExtendedDynamicRangeContent,
+                 lsfgHudSetColorSpace(game.colorspace));
+        if (name) CFRelease(name);
+    }
+}
+
 // Puts our overlay layer on top of the game's layer (main thread; ready a moment later).
 static void attachOverlay(CAMetalLayer *game) {
     int expected = 0;
@@ -556,9 +575,7 @@ static void attachOverlay(CAMetalLayer *game) {
     dispatch_async(dispatch_get_main_queue(), ^{
         CAMetalLayer *o = [CAMetalLayer layer];
         o.device = game.device;
-        o.pixelFormat = game.pixelFormat;
-        o.colorspace = game.colorspace;
-        o.wantsExtendedDynamicRangeContent = game.wantsExtendedDynamicRangeContent;
+        matchGameColor(o, game);
         o.framebufferOnly = NO;
         o.drawableSize = game.drawableSize;
         o.contentsScale = game.contentsScale;
@@ -598,14 +615,20 @@ static CGFloat screenScaleOf(CALayer *layer) {
 static _Atomic bool overlayMoving;
 static BOOL overlayOnGameLayer(void) {
     CAMetalLayer *o = overlay, *game = fgLayer;
-    if (!o || !game || o.superlayer == game) return YES;
+    if (!o || !game) return YES;
+    const BOOL sameFormat = o.pixelFormat == game.pixelFormat;
+    if (o.superlayer == game && sameFormat) return YES;
     if (atomic_exchange(&overlayMoving, true)) return NO;
     dispatch_async(dispatch_get_main_queue(), ^{
         CAMetalLayer *g = fgLayer;
-        if (g && o.superlayer != g) {
+        if (g && o.superlayer == g && o.pixelFormat != g.pixelFormat) {   // same layer, new format (HDR toggled)
+            matchGameColor(o, g);
+            updateScaler();
+        } else if (g && o.superlayer != g) {
             [CATransaction begin];
             [CATransaction setDisableActions:YES];
             [o removeFromSuperlayer];
+            matchGameColor(o, g);   // a new swapchain can bring another format (HDR switched on or off)
             o.frame = g.bounds;
             [g addSublayer:o];
             [CATransaction commit];

@@ -407,6 +407,63 @@ static void drawHUD(void) {
     ImGui::End();
 }
 
+// --- Colour: the HUD's colours are sRGB; in an HDR target they're converted per vertex after ImGui lays it out.
+// Blending then happens in the target's encoding, which only shifts the panel's translucency a little.
+enum ColorMode { kColorSDR, kColorPQ2020, kColorLinearSRGB, kColorLinear2020 };
+static std::atomic<int> colorMode{kColorSDR};
+static const float kSDRWhiteNits = 203;   // ITU-R BT.2408: SDR white in HDR
+
+extern "C" const char *lsfgHudSetColorSpace(CGColorSpaceRef space) {
+    CFStringRef name = space ? CGColorSpaceCopyName(space) : NULL;
+    int mode = kColorSDR;
+    const char *label = space ? "SDR" : "none (SDR)";
+    if (name) {
+        if (CFEqual(name, kCGColorSpaceITUR_2100_PQ)    // and the older names (deprecated constants)
+            || CFEqual(name, CFSTR("kCGColorSpaceITUR_2020_PQ")) || CFEqual(name, CFSTR("kCGColorSpaceITUR_2020_PQ_EOTF"))) { mode = kColorPQ2020; label = "HDR10 (PQ, BT.2020)"; }
+        else if (CFEqual(name, kCGColorSpaceExtendedLinearSRGB) || CFEqual(name, kCGColorSpaceLinearSRGB)) {
+            mode = kColorLinearSRGB; label = "linear sRGB"; }
+        else if (CFEqual(name, kCGColorSpaceExtendedLinearITUR_2020) || CFEqual(name, kCGColorSpaceLinearITUR_2020)) {
+            mode = kColorLinear2020; label = "linear BT.2020"; }
+        CFRelease(name);
+    }
+    colorMode.store(mode);
+    return label;
+}
+
+static float srgbToLinear(float c) { return c <= 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f); }
+
+static float linearToPQ(float nits) {   // SMPTE ST 2084
+    const float m1 = 0.1593017578125f, m2 = 78.84375f, c1 = 0.8359375f, c2 = 18.8515625f, c3 = 18.6875f;
+    const float y = powf(fmaxf(nits, 0) / 10000, m1);
+    return powf((c1 + c2 * y) / (1 + c3 * y), m2);
+}
+
+// One 8-bit sRGB channel triple to the target's encoding (a table per mode would do too; vertices are few).
+static ImU32 convertColor(ImU32 c, int mode) {
+    float r = srgbToLinear(((c >> IM_COL32_R_SHIFT) & 0xFF) / 255.0f);
+    float g = srgbToLinear(((c >> IM_COL32_G_SHIFT) & 0xFF) / 255.0f);
+    float b = srgbToLinear(((c >> IM_COL32_B_SHIFT) & 0xFF) / 255.0f);
+    if (mode == kColorPQ2020 || mode == kColorLinear2020) {   // BT.709 -> BT.2020 primaries (BT.2087)
+        const float r2 = 0.6274f * r + 0.3293f * g + 0.0433f * b;
+        const float g2 = 0.0691f * r + 0.9195f * g + 0.0114f * b;
+        const float b2 = 0.0164f * r + 0.0880f * g + 0.8956f * b;
+        r = r2; g = g2; b = b2;
+    }
+    if (mode == kColorPQ2020) {
+        r = linearToPQ(r * kSDRWhiteNits); g = linearToPQ(g * kSDRWhiteNits); b = linearToPQ(b * kSDRWhiteNits);
+    }
+    auto byte = [](float v) { return (ImU32)lroundf(fminf(fmaxf(v, 0), 1) * 255); };
+    return (byte(r) << IM_COL32_R_SHIFT) | (byte(g) << IM_COL32_G_SHIFT) | (byte(b) << IM_COL32_B_SHIFT)
+         | (c & ((ImU32)0xFF << IM_COL32_A_SHIFT));
+}
+
+static void convertColors(ImDrawData *data) {
+    const int mode = colorMode.load();
+    if (mode == kColorSDR) return;
+    for (ImDrawList *list : data->CmdLists)
+        for (ImDrawVert &v : list->VtxBuffer) v.col = convertColor(v.col, mode);
+}
+
 extern "C" void lsfgHudEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, float scale) {
     static bool ready;
     static CFTimeInterval last;
@@ -430,6 +487,7 @@ extern "C" void lsfgHudEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, fl
     ImGui::NewFrame();
     drawHUD();
     ImGui::Render();
+    convertColors(ImGui::GetDrawData());
     id<MTLRenderCommandEncoder> encoder = [cb renderCommandEncoderWithDescriptor:rp];
     encoder.label = @"Lightscale HUD";
     ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cb, encoder);
