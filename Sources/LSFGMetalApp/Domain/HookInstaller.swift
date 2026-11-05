@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// The built hook files the app installs (bundled in the app's Resources/Hook).
@@ -63,6 +64,30 @@ enum HookFiles {
     }
     static var builtinDir: URL { root.appending(path: "wine/x86_64-windows") }
 
+    /// The installed hook's version: written on every install, so an app update can tell its games use an older hook.
+    static var versionFile: URL { root.appending(path: "hook.version") }
+    static var installedVersion: String? {
+        (try? String(contentsOf: versionFile, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The bundled hook's version: a SHA-256 of every file the app installs from (names and contents), so any change
+    /// to the hook, its bridges, kernels or weights counts. About 20 MB; hash it off the main thread.
+    static func version(of source: URL) -> String? {
+        let fm = FileManager.default
+        guard let walker = fm.enumerator(at: source, includingPropertiesForKeys: [.isRegularFileKey]) else { return nil }
+        var files: [String] = []
+        for case let url as URL in walker where (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true {
+            files.append(String(url.standardizedFileURL.path.dropFirst(source.standardizedFileURL.path.count)))
+        }
+        var hash = SHA256()
+        for file in files.sorted() {
+            guard let data = try? Data(contentsOf: source.appending(path: file), options: .mappedIfSafe) else { return nil }
+            hash.update(data: Data(file.utf8))
+            hash.update(data: data)
+        }
+        return hash.finalize().prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
+
     /// Our proxies load "lsfghook.dll" (stored as UTF-16), which identifies them among other mods' DLLs.
     static func isOurProxy(_ url: URL) -> Bool {
         guard let data = try? Data(contentsOf: url, options: .mappedIfSafe), data.count < 1_000_000 else { return false }
@@ -93,9 +118,10 @@ enum HookInstaller {
     static let libPathMarker = "lsfg-metal"   // marks our block in cxbottle.conf; kept so existing blocks still match
 
     static func install(_ game: Game, crossOver: CrossOverInstall?) async throws {
-        guard case let .ready(proxy) = game.status else {
-            if case let .blocked(reason) = game.status { throw InstallError.blocked(reason) }
-            return
+        let proxy: ProxyDLL
+        switch game.status {
+        case let .ready(p), let .installed(p): proxy = p   // installed: an update puts the current files in place
+        case let .blocked(reason): throw InstallError.blocked(reason)
         }
         guard let source = HookFiles.source else { throw InstallError.hookFilesMissing }
         guard let crossOver else { throw InstallError.crossOverMissing }
@@ -125,6 +151,7 @@ enum HookInstaller {
         try setUpBottle(game.bottle, source: source)
         try replace(game.folder.appending(path: proxy.fileName), with: source.appending(path: proxy.fileName))
         try await crossOver.reg(["add", overrideKey(game), "/v", proxy.rawValue, "/d", "native,builtin", "/f"], in: game.bottle)
+        if let version = HookFiles.version(of: source) { try version.write(to: HookFiles.versionFile, atomically: true, encoding: .utf8) }
     }
 
     /// Removes the game's proxy and override. The bottle setup (LibPath, placeholder) goes too

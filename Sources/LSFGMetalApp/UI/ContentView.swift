@@ -19,7 +19,9 @@ struct ContentView: View {
                         }
                     }
                     // Takes its own space above the content rather than covering it.
-                    .safeAreaInset(edge: .top, spacing: 0) { ProblemBanner(model: model) }
+                    .safeAreaInset(edge: .top, spacing: 0) {
+                        if model.status.problems.isEmpty { HookUpdateBanner(model: model) } else { ProblemBanner(model: model) }
+                    }
                 }
             } else {
                 OnboardingView(model: model)
@@ -55,6 +57,39 @@ private struct ProblemBanner: View {
                 .shadow(color: .black.opacity(0.15), radius: 8, y: 2)
             }
             .buttonStyle(.plain)
+            .padding(.top, 10)
+            .frame(maxWidth: .infinity)
+            .transition(.move(edge: .top).combined(with: .opacity))
+        }
+    }
+}
+
+/// The app was updated and its games still use the hook they were installed with.
+private struct HookUpdateBanner: View {
+    let model: AppModel
+
+    var body: some View {
+        if model.hookUpdateAvailable {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.down.circle.fill").foregroundStyle(.tint)
+                if let running = model.runningGame() {
+                    Text("A newer hook is ready. Quit \(running.name) to update it.").lineLimit(1)
+                } else {
+                    Text("Your games use an older hook than this version of \(AppName.display).").lineLimit(1)
+                    if model.isUpdatingHook {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Button("Update") { Task { await model.updateHooks() } }
+                            .buttonStyle(.borderless)
+                            .fontWeight(.semibold)
+                    }
+                }
+            }
+            .font(.callout)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(.regularMaterial, in: Capsule())
+            .shadow(color: .black.opacity(0.15), radius: 8, y: 2)
             .padding(.top, 10)
             .frame(maxWidth: .infinity)
             .transition(.move(edge: .top).combined(with: .opacity))

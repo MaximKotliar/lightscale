@@ -161,3 +161,18 @@ import Testing
     try Data("[EnvironmentVariables]\n\"D3DM_ENABLE_METALFX\" = \"1\"\n".utf8).write(to: bottle.conf)
     #expect(bottle.dlssEnabled)
 }
+
+@Test func hookVersionChangesWithAnyBundledFile() throws {
+    let dir = FileManager.default.temporaryDirectory.appending(path: "lsfg-hook-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir.appending(path: "baked"), withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    try Data("hook".utf8).write(to: dir.appending(path: "lsfghook.so"))
+    try Data("kernel".utf8).write(to: dir.appending(path: "baked/k.bin"))
+    let first = try #require(HookFiles.version(of: dir))
+    #expect(HookFiles.version(of: dir) == first)                        // stable
+    try Data("kernel2".utf8).write(to: dir.appending(path: "baked/k.bin"))
+    let second = try #require(HookFiles.version(of: dir))
+    #expect(second != first)                                            // a file in a subfolder counts
+    try FileManager.default.moveItem(at: dir.appending(path: "baked/k.bin"), to: dir.appending(path: "baked/j.bin"))
+    #expect(HookFiles.version(of: dir) != second)                       // so does a rename
+}

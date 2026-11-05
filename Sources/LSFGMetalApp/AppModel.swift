@@ -17,6 +17,11 @@ final class AppModel {
     private(set) var gptkVersions: [GPTKVersion] = []
     private(set) var installedGPTK: String?
     private(set) var isSwitchingGPTK = false
+    /// Hooked games run an older hook than this app ships (it was updated since they were installed).
+    private(set) var hookUpdateAvailable = false
+    private(set) var isUpdatingHook = false
+    /// The bundled hook's version, hashed once per launch.
+    private var bundledHookVersion: String?
     var selection: Game.ID?
     var showingSetup = false
     var error: String?
@@ -61,6 +66,28 @@ final class AppModel {
             setProfile(profiles.profile(for: game), for: game)
         }
         if selection == nil || selectedGame == nil { selection = games.first?.id }
+        await checkHookVersion()
+    }
+
+    private func checkHookVersion() async {
+        if bundledHookVersion == nil, let source = HookFiles.source {
+            bundledHookVersion = await Task.detached(priority: .utility) { HookFiles.version(of: source) }.value
+        }
+        guard let bundled = bundledHookVersion else { hookUpdateAvailable = false; return }
+        hookUpdateAvailable = games.contains { $0.isInstalled } && HookFiles.installedVersion != bundled
+    }
+
+    /// Reinstalls the hook for every game that has it: the shared files and each game's proxy. Not while one of them
+    /// runs, since it has the hook loaded.
+    func updateHooks() async {
+        if let running = runningGame() {
+            error = "Quit \(running.name) first: it has the hook loaded."
+            return
+        }
+        isUpdatingHook = true
+        defer { isUpdatingHook = false }
+        for game in games where game.isInstalled { await install(game) }
+        await checkHookVersion()
     }
 
     /// Installed games first, then games that can be installed, then the rest; by name within each.
@@ -87,6 +114,7 @@ final class AppModel {
 
     func install(_ game: Game) async {
         await perform(on: game) { try await HookInstaller.install(game, crossOver: self.status.crossOver) }
+        await checkHookVersion()
     }
 
     func uninstall(_ game: Game) async {
