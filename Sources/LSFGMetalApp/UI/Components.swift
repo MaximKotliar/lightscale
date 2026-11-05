@@ -1,3 +1,4 @@
+import UniformTypeIdentifiers
 import AppKit
 import LSFGCore
 import SwiftUI
@@ -133,6 +134,18 @@ struct SetupChecklist: View {
 }
 
 private struct CheckRow: View {
+    /// Asks for Lossless.dll, copies it in after checking it, then re-checks the setup.
+    @MainActor private func addLossless() {
+        let panel = NSOpenPanel()
+        panel.message = "Choose Lossless.dll from the folder where Lossless Scaling is installed"
+        panel.prompt = "Add"
+        panel.allowedContentTypes = [UTType(filenameExtension: "dll") ?? .data]
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let source = panel.url else { return }
+        do { try LosslessFile.add(from: source) } catch { NSAlert(error: error).runModal(); return }
+        Task { await model.refresh() }
+    }
+
     let check: Check
     let model: AppModel
     @State private var copied = false
@@ -165,6 +178,18 @@ private struct CheckRow: View {
             .help("Run in Terminal: \(command)")
         case let .open(url):
             Link("Get It", destination: url).buttonStyle(.bordered)
+        case let .addLossless(store):
+            HStack(spacing: 8) {
+                if let store { Link("Get It", destination: store).buttonStyle(.bordered) }
+                Button("Add File…") { addLossless() }
+                    .help("Choose Lossless.dll from your copy of Lossless Scaling, wherever you bought it")
+            }
+        case .removeLossless:
+            Button("Remove") {
+                do { try LosslessFile.remove() } catch { NSAlert(error: error).runModal() }
+                Task { await model.refresh() }
+            }
+            .help("Stop using the Lossless.dll you added (a Steam install in a bottle is used instead, if there is one)")
         case nil:
             EmptyView()
         }

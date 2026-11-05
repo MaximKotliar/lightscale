@@ -1702,6 +1702,13 @@ __attribute__((constructor)) static void lsfg_unix_init(void) {
         // LSFG_EXE_PATH: pretend to be this .exe (tests; under Wine the PE side sends the real path).
         if (getenv("LSFG_EXE_PATH")) exePath = @(getenv("LSFG_EXE_PATH"));
         loadConfig();
+        // A Lossless.dll the user added in the app (a copy bought outside Steam) wins over the Steam install;
+        // LSFG_DLL from the environment wins over both. The bridges read LSFG_DLL when they load the DLL.
+        NSString *chosenDLL = [appDataDir() stringByAppendingPathComponent:@"lossless/Lossless.dll"];
+        if (!getenv("LSFG_DLL") && [NSFileManager.defaultManager fileExistsAtPath:chosenDLL]) {
+            setenv("LSFG_DLL", chosenDLL.fileSystemRepresentation, 1);
+            lsfg_log(@"Lossless Scaling: the copy added in the app (%@)", chosenDLL);
+        }
         // Loaded even when the profile has frame generation off, so it can be switched on live.
         fgAvailable = envOn("LSFG_READABLE", YES) && loadBridge();
         scaleAvailable = fgAvailable && loadScaleBridge();

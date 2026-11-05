@@ -78,7 +78,7 @@ private struct ProfileCard: View {
 
     var body: some View {
         Card(title: "Frame Generation") {
-            if model.status.lossless == nil { NeedsLosslessNote(what: "Frame generation") }
+            if model.status.losslessDLL == nil { NeedsLosslessNote(what: "Frame generation") }
             MultiplierRow(level: profile.level)
             Divider()
             Group {
@@ -168,7 +168,7 @@ private struct UpscalerCard: View {
                 }
                 .labelsHidden()
             }
-            if model.status.lossless == nil && p.scaler != "off" && !Self.ownScalers.contains(p.scaler) {
+            if model.status.losslessDLL == nil && p.scaler != "off" && !Self.ownScalers.contains(p.scaler) {
                 NeedsLosslessNote(what: "This upscaler")   // NIS and Nearest come with Lightscale
             }
             if ["ls1", "fsr", "bcas", "nis"].contains(p.scaler) {

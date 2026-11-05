@@ -9,6 +9,10 @@ struct Check: Identifiable, Sendable {
     enum Fix: Sendable, Equatable {
         case command(String)
         case open(URL)
+        /// Add Lossless.dll from disk (and a link to buy it, when there's no copy at all).
+        case addLossless(store: URL?)
+        /// Stop using the Lossless.dll added from disk.
+        case removeLossless
     }
 
     let id: String
@@ -22,6 +26,8 @@ struct Check: Identifiable, Sendable {
 struct SystemStatus: Sendable {
     var crossOver: CrossOverInstall?
     var lossless: LosslessInstall?
+    /// The Lossless.dll the hook uses: one added from disk, else the Steam install's.
+    var losslessDLL: URL?
     var checks: [Check] = []
 
     var problems: [Check] { checks.filter { $0.state == .missing } }
@@ -54,15 +60,20 @@ enum DependencyChecker {
                             fix: status.crossOver == nil ? .open(URL(string: "https://www.codeweavers.com/crossover")!) : nil))
 
         // LIGHTSCALE_HIDE_LOSSLESS=1: act as if it isn't installed (to try the app the way users without it see it)
-        status.lossless = ProcessInfo.processInfo.environment["LIGHTSCALE_HIDE_LOSSLESS"] == "1" ? nil
+        let hideLossless = ProcessInfo.processInfo.environment["LIGHTSCALE_HIDE_LOSSLESS"] == "1"
+        status.lossless = hideLossless ? nil
             : LosslessLocator.findAll(roots: LosslessLocator.bottleRoots(crossOverApps: CrossOverInstall.candidateApps)).first
-        checks.append(Check(id: "lossless", title: "Lossless Scaling",
-                            detail: status.lossless.map { "Steam build \($0.buildID ?? "?") in bottle \($0.bottle.lastPathComponent)" }
-                                ?? "Optional: adds frame generation and display scaling. Buy it on Steam, then install it with Steam inside a CrossOver bottle.",
-                            state: status.lossless == nil ? .optional : .ok,
-                            fix: status.lossless == nil ? .open(LosslessScaling.store) : nil))
+        let added = hideLossless ? nil : LosslessFile.installed
+        status.losslessDLL = added ?? status.lossless?.dll
+        let losslessDetail: String
+        if added != nil { losslessDetail = "Your copy, added from disk" }
+        else if let steam = status.lossless { losslessDetail = "Steam build \(steam.buildID ?? "?") in bottle \(steam.bottle.lastPathComponent)" }
+        else { losslessDetail = "Optional: adds frame generation and display scaling. Install it with Steam inside a CrossOver bottle, or add Lossless.dll from your copy (any store)." }
+        checks.append(Check(id: "lossless", title: "Lossless Scaling", detail: losslessDetail,
+                            state: status.losslessDLL == nil ? .optional : .ok,
+                            fix: added != nil ? .removeLossless : status.lossless == nil ? .addLossless(store: LosslessScaling.store) : nil))
 
-        if let dll = status.lossless?.dll { checks += kernelChecks(dll: dll) }
+        if let dll = status.losslessDLL { checks += kernelChecks(dll: dll) }
 
         let hook = HookFiles.source
         checks.append(Check(id: "hook", title: "Game hook", detail: hook == nil ? "Missing from the app; rebuild it" : "Included",
