@@ -9,9 +9,12 @@ APP="$ROOT/build/$NAME.app"
 rm -rf "$ROOT/build/LSFG Metal.app"   # this build under its old name
 
 "$ROOT/hook/build.sh" >/dev/null
-# Pre-baked kernels (no weights inside) from this Mac's Lossless.dll, if there is one.
+# Pre-baked kernels (no weights inside) from this Mac's Lossless.dll, if there is one. They're translated from
+# Lossless Scaling's shaders, so release builds leave them out (BAKE=0): the app then translates on first run.
 rm -rf "$ROOT/hook/build/baked"
-if swift run --package-path "$ROOT/vendor/lsfg-metal" -c release -q lsfg-metal bake --out "$ROOT/hook/build/baked" >/dev/null 2>&1; then
+if [ "${BAKE:-1}" = 0 ]; then
+    echo "building without pre-baked kernels (BAKE=0)"
+elif swift run --package-path "$ROOT/vendor/lsfg-metal" -c release -q lsfg-metal bake --out "$ROOT/hook/build/baked" >/dev/null 2>&1; then
     echo "baked kernels included"
 else
     rm -rf "$ROOT/hook/build/baked"
