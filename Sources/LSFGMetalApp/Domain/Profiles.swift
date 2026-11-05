@@ -28,6 +28,11 @@ struct GameProfile: Codable, Equatable, Sendable {
     var hud = false
     /// The HUD's size: 1 is the Metal HUD's.
     var hudScale = 1.0
+    /// While the game runs: macOS Game Mode on (the app does it; the hook ignores it).
+    var gameMode = true
+    /// While the game is in front: re-hide the cursor when the hidden one drifts into the Dock, menu bar or a hot
+    /// corner (the app does it; the hook ignores it).
+    var cursorFix = true
 
     init(enabled: Bool = true, multiplier: Int = 2, performance: Bool = true, flowScale: Double = 1.0, bufferMs: Double = 8.0, gptk: String? = nil,
          upscaler: String = "metalfx", nssQuality: String = "mid", scaler: String = "off", scalerSharpness: Double = 0.5,
@@ -64,6 +69,8 @@ struct GameProfile: Codable, Equatable, Sendable {
         scalerPerformance = try c.decodeIfPresent(Bool.self, forKey: .scalerPerformance) ?? d.scalerPerformance
         hud = try c.decodeIfPresent(Bool.self, forKey: .hud) ?? d.hud
         hudScale = try c.decodeIfPresent(Double.self, forKey: .hudScale) ?? d.hudScale
+        gameMode = try c.decodeIfPresent(Bool.self, forKey: .gameMode) ?? d.gameMode
+        cursorFix = try c.decodeIfPresent(Bool.self, forKey: .cursorFix) ?? d.cursorFix
     }
 
     /// Off / 2x / 4x as one value (0, 1, 2) for the slider.

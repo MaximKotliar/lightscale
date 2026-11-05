@@ -28,6 +28,8 @@ final class AppModel {
     /// The bundled hook's version, hashed once per launch.
     private var bundledHookVersion: String?
     var selection: Game.ID?
+    /// Game Mode and the cursor fix while a hooked game runs.
+    let playSession = PlaySession()
     var showingSetup = false
     var error: String?
 
@@ -258,6 +260,12 @@ final class AppModel {
     func followLive() async {
         while !Task.isCancelled {
             live = await Task.detached(priority: .utility) { LiveStats.read() }.value
+            if let game = runningGame(), let pid = live.samples.last?.pid {
+                let p = profile(for: game)
+                playSession.update(.init(pid: pid_t(pid), gameMode: p.gameMode, cursorFix: p.cursorFix))
+            } else {
+                playSession.update(nil)
+            }
             try? await Task.sleep(for: .seconds(1))
         }
     }

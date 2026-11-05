@@ -17,6 +17,7 @@ struct GameDetailView: View {
                     ProfileCard(game: game, model: model)
                     UpscalerCard(game: game, model: model)
                     HUDCard(game: game, model: model)
+                    WhilePlayingCard(game: game, model: model)
                     if model.status.crossOver != nil { GPTKCard(game: game, model: model) }
                 }
             }
@@ -223,6 +224,34 @@ private struct HUDCard: View {
                     p.hudScale = scale
                     model.setProfile(p, for: game)
                 }), range: 0.75...2, step: 0.25) { "\(Int(($0 * 100).rounded()))%" }
+            }
+        }
+    }
+}
+
+/// What Lightscale does while the game runs, outside the game: macOS Game Mode, and MacGamingFix's cursor fix.
+private struct WhilePlayingCard: View {
+    let game: Game
+    let model: AppModel
+
+    private func binding(_ key: WritableKeyPath<GameProfile, Bool>) -> Binding<Bool> {
+        Binding(get: { model.profile(for: game)[keyPath: key] }, set: { on in
+            var p = model.profile(for: game)
+            p[keyPath: key] = on
+            model.setProfile(p, for: game)
+        })
+    }
+
+    var body: some View {
+        Card(title: "While Playing") {
+            SettingRow(title: "Game Mode", caption: model.playSession.gameModeAvailable == false
+                ? "Needs Xcode's command line tools: run xcode-select --install in Terminal, then reopen Lightscale."
+                : "Turns on macOS Game Mode while the game runs (more CPU and GPU time for it, lower Bluetooth latency), and back to automatic when it quits.") {
+                Toggle("Game Mode", isOn: binding(\.gameMode)).labelsHidden()
+                    .disabled(model.playSession.gameModeAvailable == false)
+            }
+            SettingRow(title: "Cursor fix", caption: "Stops the Mac's cursor flashing over the game when the hidden one drifts into the Dock, menu bar or a hot corner; menus that show the cursor still do. From MacGamingFix by Evert Junior. Lightscale must stay open.") {
+                Toggle("Cursor fix", isOn: binding(\.cursorFix)).labelsHidden()
             }
         }
     }

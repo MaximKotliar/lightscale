@@ -55,6 +55,9 @@ After that, Lightscale updates itself: when a new version comes out, it shows a 
    - **Display Scaling:** set the game to a lower resolution, then pick an upscaler here. NIS and Nearest work
      without Lossless Scaling.
    - **Performance HUD:** turns the overlay on, with a size slider.
+   - **While Playing:** *Game Mode* turns on macOS Game Mode while the game runs (needs Xcode's command line tools).
+     *Cursor fix* stops the Mac's cursor flashing over the game when the hidden one reaches the Dock, menu bar or a
+     hot corner. Both are on by default and work while Lightscale is open.
 5. **Play.** Start the game from Steam in CrossOver as usual. When frame generation, display scaling or the HUD is
    on, the Lightscale icon shows in the bottom-left corner for the first 5 seconds, so you know it's working. You can
    change settings while the game runs, and they apply within a second.
@@ -113,7 +116,9 @@ the game.
 Lightscale is MIT-licensed (see [LICENSE](LICENSE)). It's an independent project, not affiliated with Lossless
 Scaling, Arm, Apple or CodeWeavers. Lossless Scaling is not included: Lightscale uses the copy you bought. NSS
 ships with Arm's trained weights, which are licensed by Arm under the Arm AI Model Community License, not MIT. Using
-NSS means agreeing to its acceptable-use terms, which the app shows next to the NSS setting and under Help.
+NSS means agreeing to its acceptable-use terms, which the app shows next to the NSS setting and under Help. The
+cursor fix is [MacGamingFix](https://github.com/evertjr/MacGamingFix)'s, by Evert Junior (MIT; its license is in
+`Sources/CursorFence`).
 
 # For developers
 

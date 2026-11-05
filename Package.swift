@@ -13,7 +13,9 @@ let package = Package(
         .package(path: "vendor/lsfg-metal"),
     ],
     targets: [
-        .executableTarget(name: "LSFGMetalApp", dependencies: [.product(name: "LSFGCore", package: "lsfg-metal")]),
+        .executableTarget(name: "LSFGMetalApp", dependencies: [.product(name: "LSFGCore", package: "lsfg-metal"), "CursorFence"]),
+        // MacGamingFix's cursor fix (MIT, its LICENSE is next to it), kept as written: Swift 5 rules.
+        .target(name: "CursorFence", exclude: ["LICENSE"], swiftSettings: [.swiftLanguageMode(.v5)]),
         .testTarget(name: "LSFGMetalAppTests", dependencies: [
             "LSFGMetalApp", .product(name: "LSFGCore", package: "lsfg-metal"),
         ]),
