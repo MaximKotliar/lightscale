@@ -139,9 +139,9 @@ private struct CheckRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: check.state == .ok ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+            Image(systemName: check.state == .ok ? "checkmark.circle.fill" : check.state == .optional ? "circle.dashed" : "exclamationmark.circle.fill")
                 .font(.title3)
-                .foregroundStyle(check.state == .ok ? .green : .orange)
+                .foregroundStyle(check.state == .ok ? AnyShapeStyle(.green) : check.state == .optional ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
                 .frame(width: 20)
             VStack(alignment: .leading, spacing: 2) {
                 Text(check.title).font(.body.weight(.medium))
@@ -156,12 +156,6 @@ private struct CheckRow: View {
 
     @ViewBuilder private var fix: some View {
         switch check.fix {
-        case .buildKernels:
-            if let progress = model.buildProgress {
-                ProgressView(value: progress).frame(width: 90)
-            } else {
-                Button("Build") { Task { await model.buildKernels() } }.buttonStyle(.borderedProminent)
-            }
         case let .command(command):
             Button(copied ? "Copied" : "Copy Command") {
                 NSPasteboard.general.clearContents()

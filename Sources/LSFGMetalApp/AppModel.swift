@@ -11,7 +11,6 @@ final class AppModel {
     private(set) var folderProfiles: [Game.ID: GameProfile] = [:]
     private(set) var live = LiveStats.Snapshot()
     private(set) var isChecking = false
-    private(set) var buildProgress: Double?
     private(set) var busyGames: Set<URL> = []
     /// GPTK versions the app can switch CrossOver to, and the one CrossOver has now.
     private(set) var gptkVersions: [GPTKVersion] = []
@@ -96,20 +95,6 @@ final class AppModel {
             switch g.status { case .installed: 0; case .ready: 1; case .blocked: 2 }
         }
         return rank(a) != rank(b) ? rank(a) < rank(b) : a.name.localizedStandardCompare(b.name) == .orderedAscending
-    }
-
-    func buildKernels() async {
-        guard let dll = status.lossless?.dll, buildProgress == nil else { return }
-        buildProgress = 0
-        defer { buildProgress = nil }
-        do {
-            try await ShaderTranslator.translate(dll: dll) { value in
-                Task { @MainActor in self.buildProgress = value }
-            }
-        } catch {
-            self.error = error.localizedDescription
-        }
-        await refresh()
     }
 
     func install(_ game: Game) async {

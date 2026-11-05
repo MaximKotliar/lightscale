@@ -4,9 +4,9 @@ import Metal
 
 /// One line of the setup checklist.
 struct Check: Identifiable, Sendable {
-    enum State: Sendable { case ok, missing }
+    /// optional: not there, and the app works without it (Lossless Scaling: frame generation and display scaling).
+    enum State: Sendable { case ok, missing, optional }
     enum Fix: Sendable, Equatable {
-        case buildKernels
         case command(String)
         case open(URL)
     }
@@ -25,7 +25,13 @@ struct SystemStatus: Sendable {
     var checks: [Check] = []
 
     var problems: [Check] { checks.filter { $0.state == .missing } }
-    var isReady: Bool { !checks.isEmpty && problems.isEmpty }
+    /// Installing needs only these; without Lossless Scaling the hook still runs NSS/MetalFX and the HUD.
+    static let required: Set<String> = ["gpu", "crossover", "hook"]
+    var isReady: Bool { !checks.isEmpty && !problems.contains { Self.required.contains($0.id) } }
+}
+
+enum LosslessScaling {
+    static let store = URL(string: "https://store.steampowered.com/app/993090/")!
 }
 
 enum DependencyChecker {
@@ -47,14 +53,16 @@ enum DependencyChecker {
                             state: status.crossOver == nil ? .missing : .ok,
                             fix: status.crossOver == nil ? .open(URL(string: "https://www.codeweavers.com/crossover")!) : nil))
 
-        status.lossless = LosslessLocator.findAll(roots: LosslessLocator.bottleRoots(crossOverApps: CrossOverInstall.candidateApps)).first
+        // LIGHTSCALE_HIDE_LOSSLESS=1: act as if it isn't installed (to try the app the way users without it see it)
+        status.lossless = ProcessInfo.processInfo.environment["LIGHTSCALE_HIDE_LOSSLESS"] == "1" ? nil
+            : LosslessLocator.findAll(roots: LosslessLocator.bottleRoots(crossOverApps: CrossOverInstall.candidateApps)).first
         checks.append(Check(id: "lossless", title: "Lossless Scaling",
                             detail: status.lossless.map { "Steam build \($0.buildID ?? "?") in bottle \($0.bottle.lastPathComponent)" }
-                                ?? "Install it with Steam inside a CrossOver bottle",
-                            state: status.lossless == nil ? .missing : .ok,
-                            fix: status.lossless == nil ? .open(URL(string: "https://store.steampowered.com/app/993090/")!) : nil))
+                                ?? "Optional: adds frame generation and display scaling. Buy it on Steam, then install it with Steam inside a CrossOver bottle.",
+                            state: status.lossless == nil ? .optional : .ok,
+                            fix: status.lossless == nil ? .open(LosslessScaling.store) : nil))
 
-        if let dll = status.lossless?.dll { checks.append(await kernelCheck(dll: dll)) }
+        if let dll = status.lossless?.dll { checks += kernelChecks(dll: dll) }
 
         let hook = HookFiles.source
         checks.append(Check(id: "hook", title: "Game hook", detail: hook == nil ? "Missing from the app; rebuild it" : "Included",
@@ -63,30 +71,24 @@ enum DependencyChecker {
         return status
     }
 
-    /// Kernels: pre-built ones (weights from the user's DLL) when they match this Lossless Scaling
-    /// version, otherwise built on this Mac, which needs spirv-cross and Xcode's Metal compiler.
-    private static func kernelCheck(dll: URL) async -> Check {
-        if let baked = HookFiles.source?.appending(path: "baked"),
-           FileManager.default.fileExists(atPath: baked.appending(path: LSFGKernels.manifestName).path),
-           (try? LSFGKernels.bakedMismatches(bakedDirectory: baked, dll: dll, ids: kernelIDs))?.isEmpty == true {
-            return Check(id: "kernels", title: "Frame generation", detail: "Ready for your Lossless Scaling version", state: .ok)
+    /// The app ships every kernel pre-built, without Lossless Scaling's numbers (read from the user's copy when a
+    /// game loads them); nothing is built on this Mac. They fit the Lossless Scaling versions they were built from;
+    /// a Lossless Scaling update that changes a shader needs a Lightscale update.
+    private static func kernelChecks(dll: URL) -> [Check] {
+        let baked = HookFiles.source?.appending(path: "baked")
+        let fm = FileManager.default
+        func fits(_ manifest: String, _ mismatches: (URL) throws -> [UInt32]) -> Bool {
+            guard let baked, fm.fileExists(atPath: baked.appending(path: manifest).path) else { return false }
+            return (try? mismatches(baked))?.isEmpty == true
         }
-        if ShaderTranslator.isTranslated(dll: dll) {
-            return Check(id: "kernels", title: "Frame generation", detail: "Built on this Mac for your Lossless Scaling version", state: .ok)
-        }
-        if Shell.which("spirv-cross") == nil {
-            return Check(id: "kernels", title: "Frame generation",
-                         detail: "Your Lossless Scaling version needs a one-time build. Install the shader converter first.",
-                         state: .missing, fix: .command("brew install spirv-cross"))
-        }
-        let metal = try? await Shell.run(URL(fileURLWithPath: "/usr/bin/xcrun"), ["-sdk", "macosx", "-f", "metal"])
-        if metal?.succeeded != true {
-            return Check(id: "kernels", title: "Frame generation",
-                         detail: "Your Lossless Scaling version needs a one-time build. Install Xcode's Metal compiler first.",
-                         state: .missing, fix: .command("xcodebuild -downloadComponent MetalToolchain"))
-        }
-        return Check(id: "kernels", title: "Frame generation",
-                     detail: "Your Lossless Scaling version needs a one-time build (about 10 seconds).",
-                     state: .missing, fix: .buildKernels)
+        let update = "Your Lossless Scaling version is newer than this version of \(AppName.display) supports. Update \(AppName.display) to use it."
+        let frameGeneration = fits(LSFGKernels.manifestName) { try LSFGKernels.bakedMismatches(bakedDirectory: $0, dll: dll, ids: kernelIDs) }
+        let scaling = fits(LSFGKernels.dxbcManifestName) { try LSFGKernels.dxbcBakedMismatches(bakedDirectory: $0, dll: dll) }
+        return [
+            Check(id: "kernels", title: "Frame generation",
+                  detail: frameGeneration ? "Ready for your Lossless Scaling version" : update, state: frameGeneration ? .ok : .missing),
+            Check(id: "scaling", title: "Display scaling",
+                  detail: scaling ? "Ready for your Lossless Scaling version" : update, state: scaling ? .ok : .missing),
+        ]
     }
 }

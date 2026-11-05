@@ -201,6 +201,9 @@ static BOOL fgAvailable;               // the bridge loaded and drawables are re
 static _Atomic bool fgOn;              // the profile's on/off switch (changes live)
 static _Atomic int fgState;            // 0 idle, 1 creating, 2 ready, -1 failed
 static void *fgContext;                // used on the game's commit path only
+// LSFG couldn't start (no Lossless Scaling, or its kernels aren't built): the overlay still works (HUD, display
+// scaling), with frame generation off for good.
+static BOOL lsfgMissing;
 static void *_Atomic fgPending;        // rebuilt context waiting to replace fgContext
 static int fgWarmup;                   // frames to feed LSFG without showing (fresh history)
 static __weak id<MTLDevice> fgDevice;
@@ -492,18 +495,18 @@ static void fgCreateContext(id<MTLDevice> device, id<MTLTexture> frame) {
         CFTimeInterval t0 = CACurrentMediaTime();
         void *ctx = bridge.create((__bridge const void *)device, (int)w, (int)h, (unsigned)format, config.multiplier, flow, perf, error, sizeof error);
         if (!ctx) {
-            lsfg_log(@"frame generation off: %s", error);
-            atomic_store(&fgState, -1);
-            return;
+            lsfg_log(@"frame generation unavailable (the HUD and display path still work): %s", error);
+            lsfgMissing = YES;
         }
         fgDevice = device;
-        allocateRings(device, w, h, format, config.multiplier);
+        allocateRings(device, w, h, format, ctx ? config.multiplier : 1);
         presentQueue = [device newCommandQueue];
         presenter = dispatch_queue_create("lsfg.presenter", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
         slotsFree = dispatch_semaphore_create(kSlots);
         fgContext = ctx;
         fgWidth = w; fgHeight = h; fgFormat = format;
         atomic_store(&fgState, 2);
+        if (!ctx) return;
         lsfg_log(@"frame generation ready: %lux%lu fmt %lu, flow %.2f, %s mode, built in %.2fs", (unsigned long)w,
                  (unsigned long)h, (unsigned long)format, flow, perf ? "performance" : "quality", CACurrentMediaTime() - t0);
     });
@@ -517,7 +520,7 @@ static void fgRebuild(void) {
     dispatch_once(&once, ^{ queue = dispatch_queue_create("lsfg.rebuild", DISPATCH_QUEUE_SERIAL); });
     dispatch_async(queue, ^{
         id<MTLDevice> device = fgDevice;
-        if (atomic_load(&fgState) != 2 || !device) return;
+        if (atomic_load(&fgState) != 2 || !device || lsfgMissing) return;
         char error[512] = {0};
         int multiplier = config.multiplier;
         float flow = config.flowScale;
@@ -921,7 +924,7 @@ static BOOL fgShouldRun(void) {
             lsfg_log(@"game at %.0f fps: frame generation back on", 1 / gameInterval);
         }
     }
-    fgRunLSFG = atomic_load(&fgOn) && !aside;
+    fgRunLSFG = atomic_load(&fgOn) && !aside && !lsfgMissing;
     if (fgRunLSFG) return YES;
     fgWarmup = 1;                 // LSFG's history goes stale meanwhile: prime it again when it resumes
     if (overlayWanted()) return YES;   // the overlay still shows the game's own frames, upscaled or with the HUD
@@ -1075,7 +1078,7 @@ static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, void (^targ
 
     // Feed LSFG every real frame (this also warms up its history before the overlay is up), and
     // keep the real frame for display. These are the only reads of the game's frame.
-    id<MTLTexture> input = (__bridge id<MTLTexture>)bridge.input(fgContext);
+    id<MTLTexture> input = fgContext ? (__bridge id<MTLTexture>)bridge.input(fgContext) : nil;
     // With the HUD on, GPU timestamps between the copy before LSFG and the copy after it time LSFG itself.
     const int timing = config.hud && fgRunLSFG && capture ? lsfgTimingSlot(cb.device) : -1;
     id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoderWithDescriptor:lsfgTimingPass(timing, NO)];
@@ -1538,6 +1541,7 @@ static void publishHUD(const long *c, int shown, double mean, double sd, double 
     h.refreshHz = refresh > 0 ? 1 / refresh : 0;
     h.fgGpuMs = fgRunLSFG ? fgMs : 0; h.presentGpuMs = presentMs; h.queuedMs = queuedMs; h.gpuBusy = busy;
     if (!fgAvailable) snprintf(h.frameGen, sizeof h.frameGen, "unavailable");
+    else if (lsfgMissing) snprintf(h.frameGen, sizeof h.frameGen, "needs Lossless Scaling");
     else if (!atomic_load(&fgOn)) snprintf(h.frameGen, sizeof h.frameGen, "off");
     else if (atomic_load(&fgSteppedAside)) snprintf(h.frameGen, sizeof h.frameGen, "paused: game above half refresh");
     else if (config.flowScale < 0.99f)

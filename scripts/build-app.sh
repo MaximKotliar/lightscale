@@ -9,16 +9,22 @@ APP="$ROOT/build/$NAME.app"
 rm -rf "$ROOT/build/LSFG Metal.app"   # this build under its old name
 
 "$ROOT/hook/build.sh" >/dev/null
-# Pre-baked kernels (no weights inside) from this Mac's Lossless.dll, if there is one. They're translated from
-# Lossless Scaling's shaders, so release builds leave them out (BAKE=0): the app then translates on first run.
+# Pre-baked kernels from this Mac's Lossless.dll, without Lossless Scaling's numbers (weights and other constants):
+# the hook reads those from the user's own copy, so users need no tools. Frame generation (SPIR-V) always; the
+# display upscalers (DXBC) too with DXBC_COMPILER (dxbc_compiler from github.com/doitsujin/dxbc-spirv). BAKE=0: none.
+# The display upscaler ids are lss-metal's LSSKernels.ids.
+DXBC_IDS=133,134,137,138,139,140,141,142,143,144,145,146,147,148,149,150,151,152,153,154,155,156,157,158,159,160,161,247
 rm -rf "$ROOT/hook/build/baked"
+BAKE_ARGS=(--out "$ROOT/hook/build/baked")
+[ -n "${DXBC_COMPILER:-}" ] && BAKE_ARGS+=(--dxbc-compiler "$DXBC_COMPILER" --dxbc-ids "$DXBC_IDS")
 if [ "${BAKE:-1}" = 0 ]; then
     echo "building without pre-baked kernels (BAKE=0)"
-elif swift run --package-path "$ROOT/vendor/lsfg-metal" -c release -q lsfg-metal bake --out "$ROOT/hook/build/baked" >/dev/null 2>&1; then
-    echo "baked kernels included"
+elif swift run --package-path "$ROOT/vendor/lsfg-metal" -c release -q lsfg-metal bake "${BAKE_ARGS[@]}" >/dev/null 2>&1; then
+    if [ -n "${DXBC_COMPILER:-}" ]; then echo "baked kernels included (frame generation, display scaling)"
+    else echo "baked kernels included (frame generation only: set DXBC_COMPILER for display scaling)"; fi
 else
     rm -rf "$ROOT/hook/build/baked"
-    echo "no Lossless.dll or spirv-cross here: building without pre-baked kernels (the app translates on first run)"
+    echo "no Lossless.dll or spirv-cross here: building without pre-baked kernels"
 fi
 swift build --package-path "$ROOT" -c release --product "$NAME" >/dev/null
 BIN=$(swift build --package-path "$ROOT" -c release --product "$NAME" --show-bin-path)

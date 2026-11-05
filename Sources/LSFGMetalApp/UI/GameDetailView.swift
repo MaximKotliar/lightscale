@@ -78,6 +78,7 @@ private struct ProfileCard: View {
 
     var body: some View {
         Card(title: "Frame Generation") {
+            if model.status.lossless == nil { NeedsLosslessNote(what: "Frame generation") }
             MultiplierRow(level: profile.level)
             Divider()
             Group {
@@ -165,6 +166,7 @@ private struct UpscalerCard: View {
                 }
                 .labelsHidden()
             }
+            if model.status.lossless == nil { NeedsLosslessNote(what: "Display Scaling") }
             if ["ls1", "fsr", "bcas"].contains(p.scaler) {
                 SliderRow(title: "Sharpness", value: profile.scalerSharpness, range: 0...1, step: 0.25) { "\(Int(($0 * 100).rounded()))%" }
             }
@@ -363,6 +365,23 @@ private struct NoDLSSNote: View {
             }
         }
         .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// Frame generation and display scaling run Lossless Scaling's own shaders, read from the user's copy.
+private struct NeedsLosslessNote: View {
+    let what: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Label("\(what) needs Lossless Scaling, which isn't installed. These settings do nothing until it is.",
+                  systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            Link("Buy on Steam", destination: LosslessScaling.store)
+        }
+        .font(.callout)
     }
 }
 

@@ -25,7 +25,7 @@ struct OnboardingView: View {
                     .foregroundStyle(.tint)
                     .symbolRenderingMode(.hierarchical)
                 Text(AppName.display).font(.title.weight(.bold))
-                Text("Smoother Windows games in CrossOver, using frame generation from your own copy of Lossless Scaling.")
+                Text("Sharper, smoother Windows games in CrossOver: NSS in place of DLSS and an in-game performance HUD, plus frame generation and display scaling with your own copy of Lossless Scaling.")
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
