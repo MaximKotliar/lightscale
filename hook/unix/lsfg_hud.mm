@@ -465,30 +465,38 @@ static void convertColors(ImDrawData *data) {
 }
 
 // The app icon's outline, `size` points square at `p`: the rounded square, the two offset frames ("the frame in
-// between", the back one dimmer) and the sparkle, from scripts/make-icon.swift (its 824-unit body, y down).
+// between") and the sparkle, from scripts/make-icon.swift (its 824-unit body, y down). All solid: the back frame is
+// drawn only where the front one doesn't cover it, with a small gap.
 static void drawIconOutline(ImDrawList *dl, ImVec2 p, float size, float alpha, ImVec4 color) {
-    const float k = size / 824, line = fmaxf(1.0f, size * 0.04f);
+    const float k = size / 824, line = size * 0.04f;   // 1.6 pt at 40 pt
     auto at = [&](float x, float y) { return ImVec2(p.x + x * k, p.y + y * k); };
-    const ImU32 white = ImGui::ColorConvertFloat4ToU32(ImVec4(color.x, color.y, color.z, alpha)),
-                dim = ImGui::ColorConvertFloat4ToU32(ImVec4(color.x, color.y, color.z, alpha * 0.5f));
+    const ImU32 white = ImGui::ColorConvertFloat4ToU32(ImVec4(color.x, color.y, color.z, alpha));
     dl->AddRect(at(0, 0), at(824, 824), white, 185 * k, 0, line);
-    dl->AddRect(at(130, 294), at(550, 594), dim, 52 * k, 0, line * 0.8f);
     dl->AddRect(at(274, 230), at(694, 530), white, 52 * k, 0, line * 0.8f);
+    // Back frame (130,294)-(550,594): its top edge up to the front frame, the left and bottom edges, and its right
+    // edge up to the front frame.
+    const float r = 52, gap = 1.8f * line / k;
+    dl->PathLineTo(at(274 - gap, 294));
+    dl->PathArcTo(at(130 + r, 294 + r), r * k, -(float)M_PI / 2, -(float)M_PI);
+    dl->PathArcTo(at(130 + r, 594 - r), r * k, (float)M_PI, (float)M_PI / 2);
+    dl->PathArcTo(at(550 - r, 594 - r), r * k, (float)M_PI / 2, 0);
+    dl->PathLineTo(at(550, 530 + gap));
+    dl->PathStroke(white, 0, line * 0.8f);
     // Sparkle: four points joined by inward curves.
     const ImVec2 c = at(484, 380);
-    const float r = 125 * k, in = r * 0.18f;
-    dl->PathLineTo(ImVec2(c.x, c.y - r));
-    dl->PathBezierQuadraticCurveTo(ImVec2(c.x + in, c.y - in), ImVec2(c.x + r, c.y));
-    dl->PathBezierQuadraticCurveTo(ImVec2(c.x + in, c.y + in), ImVec2(c.x, c.y + r));
-    dl->PathBezierQuadraticCurveTo(ImVec2(c.x - in, c.y + in), ImVec2(c.x - r, c.y));
-    dl->PathBezierQuadraticCurveTo(ImVec2(c.x - in, c.y - in), ImVec2(c.x, c.y - r));
+    const float sr = 125 * k, in = sr * 0.18f;
+    dl->PathLineTo(ImVec2(c.x, c.y - sr));
+    dl->PathBezierQuadraticCurveTo(ImVec2(c.x + in, c.y - in), ImVec2(c.x + sr, c.y));
+    dl->PathBezierQuadraticCurveTo(ImVec2(c.x + in, c.y + in), ImVec2(c.x, c.y + sr));
+    dl->PathBezierQuadraticCurveTo(ImVec2(c.x - in, c.y + in), ImVec2(c.x - sr, c.y));
+    dl->PathBezierQuadraticCurveTo(ImVec2(c.x - in, c.y - in), ImVec2(c.x, c.y - sr));
     dl->PathFillConcave(white);
 }
 
 // The badge: for the first seconds of the game, the app icon's outline in the bottom-left corner, so players see
-// it's working: subtle, at 60% at most. `size`: its side in the HUD's points.
+// it's working. `size`: its side in the HUD's points.
 static void drawBadge(float alpha, float size) {
-    alpha = fminf(fmaxf(alpha, 0), 1) * 0.6f;
+    alpha = fminf(fmaxf(alpha, 0), 1);
     const ImGuiIO &io = ImGui::GetIO();
     const float margin = size * 0.3f;
     ImDrawList *dl = ImGui::GetForegroundDrawList();
