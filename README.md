@@ -1,6 +1,8 @@
 # Lightscale
 
-Lightscale makes Windows games running in CrossOver on Apple silicon Macs smoother and sharper.
+Lightscale makes Windows games running in CrossOver on Apple silicon Macs smoother and sharper. Its goal is the best
+image for the least GPU time, and it gives you the numbers to find it: an in-game HUD shows what every stage of the
+frame costs, so you tune by measurement instead of by feel.
 
 ![Lightscale's settings for The Last of Us Part II: frame generation at 2×, DLSS replaced with NSS](docs/screenshot.png)
 
@@ -13,7 +15,8 @@ Lightscale makes Windows games running in CrossOver on Apple silicon Macs smooth
 - **Better DLSS:** in games with DLSS, Lightscale can use Arm's
   [Neural Super Sampling](https://huggingface.co/Arm/neural-super-sampling) (NSS) instead of Apple's MetalFX. The
   image is sharper and steadier, for about the same GPU time. Works without Lossless Scaling.
-- **Performance HUD:** an overlay with frame rate, frame times, GPU load, power and memory.
+- **Performance HUD:** shows what each part of the frame costs on the GPU, what limits the frame rate, and the
+  power, latency and memory, live while you change settings. See [Tune by numbers](#tune-by-numbers).
 
 ## Requirements
 
@@ -64,6 +67,38 @@ Tips:
 
 The app keeps its data in `~/Library/Application Support/Lightscale`. The hook writes a log to
 `~/Library/Logs/Lightscale.log`, which helps when something doesn't work.
+
+## Tune by numbers
+
+Turn on **Performance HUD** for the game. It sits in the top-left corner and is drawn on the final image, after
+frame generation and scaling, so its numbers are what reaches the screen.
+
+| HUD line | What it tells you |
+|---|---|
+| **FPS** | Frames on screen, and the frames the game itself renders. With 2× frame generation, the first is about twice the second. |
+| **Frame** | Time between frames on screen and how much it varies (±). A large ± or any *drop* means uneven motion, even when the frame rate is high. |
+| **Frame cost** | GPU time per frame, split into the game, the DLSS replacement (NSS or MetalFX), frame generation, and display scaling. A 2-second average. |
+| **GPU of budget** | All GPU time against the time one frame may take at your target frame rate. Close to 100% (yellow) means the GPU is the limit. |
+| **Latency** | Delay that frame generation and the pacing buffer add. |
+| **Power** / **GPU power** | Watts for the whole Mac and for the GPU. Red with *throttling* means the Mac is too hot and slowing down. |
+| **Memory** | Memory the game uses. |
+| **Limit** | What holds the frame rate back: the *display* refresh rate, the *GPU*, frame *pacing*, or the *game/CPU*. |
+
+How to use them:
+
+1. **Find the limit.** If *Limit* says *display*, you have spare performance: raise the game's quality or
+   resolution. If it says *GPU*, lower something. If it says *game/CPU*, GPU settings won't help much.
+2. **Compare settings by their cost.** Change one setting at a time and watch *Frame cost*. For example, switch NSS
+   between Fast, Mid and High, or try frame generation's Performance and Quality modes, and keep the one where the
+   picture is good enough for the fewest milliseconds.
+3. **Spend the time you save.** Lower the game's render resolution, let NSS or display scaling bring it back up, and
+   check that *GPU of budget* stays under about 90%.
+4. **Check smoothness.** A steady *Frame* line with a small ± matters more than a higher *FPS*. If you see drops,
+   cap the game's frame rate or raise the **Pacing buffer** (at the cost of a little *Latency*).
+5. **Watch power.** For the same picture, fewer watts means a cooler, quieter Mac and longer battery life.
+
+The **Size** slider under Performance HUD changes the overlay's size. Settings apply within a second, so you can compare them without restarting
+the game.
 
 ## License
 
