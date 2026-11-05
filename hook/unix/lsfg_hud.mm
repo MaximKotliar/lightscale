@@ -491,7 +491,7 @@ static void drawIconOutline(ImDrawList *dl, ImVec2 p, float size, float alpha, I
 
     // Sparkle, centred in the front frame: four points joined by inward curves.
     const ImVec2 c = at(fx + w / 2, fy + h / 2);
-    const float sr = 118 * k, in = sr * 0.18f;
+    const float sr = 100 * k, in = sr * 0.18f;
     dl->PathLineTo(ImVec2(c.x, c.y - sr));
     dl->PathBezierQuadraticCurveTo(ImVec2(c.x + in, c.y - in), ImVec2(c.x + sr, c.y));
     dl->PathBezierQuadraticCurveTo(ImVec2(c.x + in, c.y + in), ImVec2(c.x, c.y + sr));
