@@ -10,8 +10,8 @@ frame costs, so you tune by measurement instead of by feel.
   uses Lossless Scaling's LSFG 3.1, running natively on Metal. Needs your own copy of
   [Lossless Scaling on Steam](https://store.steampowered.com/app/993090/).
 - **Display scaling, in any game:** run the game at a lower resolution, and Lightscale scales each frame up to the
-  window with Lossless Scaling's upscalers (LS1, FSR 1, BCAS, bicubic) or nearest neighbour. Also needs Lossless
-  Scaling.
+  window with Lossless Scaling's upscalers (LS1, FSR 1, BCAS, bicubic, which need Lossless Scaling) or with NVIDIA
+  Image Scaling (NIS) or nearest neighbour, which are built in.
 - **Better DLSS:** in games with DLSS, Lightscale can use Arm's
   [Neural Super Sampling](https://huggingface.co/Arm/neural-super-sampling) (NSS) instead of Apple's MetalFX. The
   image is sharper and steadier, for about the same GPU time. Works without Lossless Scaling.
@@ -52,7 +52,8 @@ After that, Lightscale updates itself: when a new version comes out, it shows a 
    - **Frame rate:** 2× or 4× turns on frame generation. Off turns it off.
    - **Mode:** *Performance* costs less GPU time; *Quality* looks better.
    - **DLSS Replacement:** NSS or MetalFX, for games with DLSS. Turn DLSS on in the game's graphics settings too.
-   - **Display Scaling:** set the game to a lower resolution, then pick an upscaler here.
+   - **Display Scaling:** set the game to a lower resolution, then pick an upscaler here. NIS and Nearest work
+     without Lossless Scaling.
    - **Performance HUD:** turns the overlay on, with a size slider.
 5. **Play.** Start the game from Steam in CrossOver as usual. When frame generation, display scaling or the HUD is
    on, the Lightscale icon shows in the bottom-left corner for the first 5 seconds, so you know it's working. You can
@@ -120,7 +121,7 @@ Its data lives in `~/Library/Application Support/Lightscale` and the hook logs t
 - **Games:** Steam games from every CrossOver bottle, plus any `.exe` you add with **Add Game** (remembered across launches; right-click to remove). Install picks the right proxy DLL from the game's imports. Games with anti-cheat, 32-bit games, and folders where another mod uses the proxy name are explained and left alone.
 - **Per-game profiles:** frame rate Off / 2× / 4×, performance or quality mode, motion detail and pacing buffer for each game. They're stored in each game's folder (`.lsfg/profile.json`, next to the proxy DLL), so every program the game runs shares them, and the hook picks up changes within a second, even mid-game.
 - **GPTK picker:** each game can name the Game Porting Toolkit version it should run with, and the app offers to switch CrossOver to it. CrossOver has one GPTK for all bottles, so a switch applies to every game and needs Steam closed. macOS asks once to let the app change CrossOver (App Management). `scripts/build-app.sh` bundles the versions it finds in `GPTK_SOURCES` (default: `~/Applications/CrossOver-GPTK-3.0-backup/apple_gptk` and `~/Applications/GPTK-4.0b3/lib`). They're never committed. A version CrossOver had that the app doesn't carry is saved to `~/Library/Application Support/Lightscale/gptk` before it's replaced.
-- **Upscaling:** two settings that stack. *DLSS Replacement* (games with DLSS) runs MetalFX or NSS in place of the game's DLSS. *Display Scaling* (any game) scales the finished frames up to the screen with Lossless Scaling's LS1, FSR, BCAS, bicubic or nearest.
+- **Upscaling:** two settings that stack. *DLSS Replacement* (games with DLSS) runs MetalFX or NSS in place of the game's DLSS. *Display Scaling* (any game) scales the finished frames up to the screen with Lossless Scaling's LS1, FSR, BCAS or bicubic, or with NIS (NVIDIA Image Scaling, ported in lss-metal) or nearest, which need no Lossless Scaling.
 - **Performance HUD:** a per-game switch for an overlay the hook draws in the game's top-right corner, on the final image of every frame on screen (after frame generation and scaling, so it's never interpolated). It shows fps on screen and the game's own fps, a frame-time graph, GPU time for frame generation, the DLSS replacement and the display pass, added latency, GPU load, power draw and memory, and a line on what limits the frame rate. It's drawn with [Dear ImGui](https://github.com/ocornut/imgui) (MIT, `vendor/imgui`).
 
 The app isn't sandboxed, because it edits CrossOver bottles and runs CrossOver's `wine`. It's built with the hardened runtime and no extra entitlements.

@@ -17,8 +17,8 @@ struct GameProfile: Codable, Equatable, Sendable {
     var upscaler = "metalfx"
     /// NSS quality: "fast", "mid" or "high" ("low" still works; the app no longer offers it).
     var nssQuality = "mid"
-    /// Lossless Scaling's spatial upscalers (lss-metal), for any game: the hook shows the game's frames scaled to the
-    /// window. "off", "ls1", "fsr", "bcas", "bicubic" or "nearest".
+    /// Spatial upscalers (lss-metal), for any game: the hook shows the game's frames scaled to the window. "off",
+    /// "ls1", "fsr", "bcas", "bicubic" (Lossless Scaling's), "nis" (NVIDIA Image Scaling) or "nearest" (built in).
     var scaler = "off"
     /// 0…1 (LS1: its five trained weight sets, softest to sharpest).
     var scalerSharpness = 0.5

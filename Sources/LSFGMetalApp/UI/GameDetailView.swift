@@ -119,8 +119,10 @@ private struct UpscalerCard: View {
         Binding(get: { model.profile(for: game) }, set: { model.setProfile($0, for: game) })
     }
 
-    static let scalers: [(tag: String, name: String)] = [("ls1", "LS1"), ("fsr", "FSR"), ("bcas", "BCAS"),
+    static let scalers: [(tag: String, name: String)] = [("ls1", "LS1"), ("fsr", "FSR"), ("nis", "NIS"), ("bcas", "BCAS"),
                                                           ("bicubic", "Bicubic"), ("nearest", "Nearest")]
+    /// Upscalers that come with Lightscale rather than from Lossless Scaling.
+    static let ownScalers: Set<String> = ["nis", "nearest"]
 
     var body: some View {
         let dlss = game.upscalers.contains(.dlss)
@@ -166,8 +168,10 @@ private struct UpscalerCard: View {
                 }
                 .labelsHidden()
             }
-            if model.status.lossless == nil { NeedsLosslessNote(what: "Display Scaling") }
-            if ["ls1", "fsr", "bcas"].contains(p.scaler) {
+            if model.status.lossless == nil && p.scaler != "off" && !Self.ownScalers.contains(p.scaler) {
+                NeedsLosslessNote(what: "This upscaler")   // NIS and Nearest come with Lightscale
+            }
+            if ["ls1", "fsr", "bcas", "nis"].contains(p.scaler) {
                 SliderRow(title: "Sharpness", value: profile.scalerSharpness, range: 0...1, step: 0.25) { "\(Int(($0 * 100).rounded()))%" }
             }
             if p.scaler == "ls1" {
@@ -190,8 +194,10 @@ private struct UpscalerCard: View {
         guard scaler != "off" else { return "Scales the finished image up to your screen's resolution. Works in any game and stacks with the setting above." }
         let what = ["ls1": "Lossless Scaling's own trained upscaler", "fsr": "AMD FSR 1",
                     "bcas": "bicubic with AMD's contrast-adaptive sharpening", "bicubic": "plain bicubic",
-                    "nearest": "nearest neighbour (sharp pixels; integer scaling at whole ratios)"][scaler] ?? scaler
-        return "Scales the finished image up to your screen's resolution with \(what). Works in any game and stacks with the setting above. Uses your Lossless Scaling."
+                    "nearest": "nearest neighbour (sharp pixels; integer scaling at whole ratios)",
+                    "nis": "NVIDIA Image Scaling (edge-aware, with sharpening; less GPU time than FSR)"][scaler] ?? scaler
+        let source = Self.ownScalers.contains(scaler) ? "Built into Lightscale: works without Lossless Scaling." : "Uses your Lossless Scaling."
+        return "Scales the finished image up to your screen's resolution with \(what). Works in any game and stacks with the setting above. \(source)"
     }
 }
 

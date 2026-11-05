@@ -280,13 +280,14 @@ static void trackPresented(id<CAMetalDrawable> d) {
 
 // The effective settings for this game: defaults, then profiles.json, then environment.
 // upscaler: 0 MetalFX (as the game asked), 1 NSS in its place. nssQuality: 0 low, 1 mid, 2 high, 3 fast (NSSQuality's values).
-// scaler (Lossless Scaling's spatial upscalers, lss-metal): 0 off, 1 LS1, 2 FSR, 3 BCAS, 4 bicubic, 5 nearest;
+// scaler (spatial upscalers, lss-metal): 0 off, 1 LS1, 2 FSR, 3 BCAS, 4 bicubic, 5 nearest, 6 NIS (NIS and nearest
+// need no Lossless Scaling);
 // the overlay then shows the game's frames scaled to the window. scalerSharpness 0-1, scalerPerformance: LS1's
 // single-pass variant. hudScale: the HUD's size, 1 = Metal HUD-like.
 static struct { BOOL enabled, performance; int multiplier; float flowScale, bufferMs; int upscaler, nssQuality;
                 int scaler; float scalerSharpness; BOOL scalerPerformance; BOOL hud; float hudScale; } config = { YES, YES, 2, 1.0f, 8.0f, 0, 1, 0, 0.5f, NO, NO, 1.0f };
 static int scalerMode(NSString *s) {
-    NSArray *names = @[@"off", @"ls1", @"fsr", @"bcas", @"bicubic", @"nearest"];
+    NSArray *names = @[@"off", @"ls1", @"fsr", @"bcas", @"bicubic", @"nearest", @"nis"];
     NSUInteger i = [names indexOfObject:s.lowercaseString];
     return i == NSNotFound ? 0 : (int)i;
 }
@@ -372,8 +373,8 @@ static void loadConfig(void) {
     lsfg_log(@"profile for %@%@: frame generation %s %dx, %s mode, flow %.2f, buffer %.0f ms", exe, gamePath ? [@" from " stringByAppendingString:gamePath] : @"", config.enabled ? "on" : "off", config.multiplier,
              config.performance ? "performance" : "quality", config.flowScale, config.bufferMs);
     lsfg_log(@"profile for %@: upscaler %s", exe, config.upscaler == 1 ? (config.nssQuality == 0 ? "NSS low" : config.nssQuality == 2 ? "NSS high" : config.nssQuality == 3 ? "NSS fast" : "NSS mid") : "MetalFX");
-    static const char *scalerNames[] = {"off", "LS1", "FSR", "BCAS", "bicubic", "nearest"};
-    lsfg_log(@"profile for %@: scaling %s, sharpness %.2f%s", exe, scalerNames[MAX(0, MIN(config.scaler, 5))], config.scalerSharpness,
+    static const char *scalerNames[] = {"off", "LS1", "FSR", "BCAS", "bicubic", "nearest", "NIS"};
+    lsfg_log(@"profile for %@: scaling %s, sharpness %.2f%s", exe, scalerNames[MAX(0, MIN(config.scaler, 6))], config.scalerSharpness,
              config.scaler == 1 && config.scalerPerformance ? ", performance" : "");
 }
 
@@ -1589,8 +1590,8 @@ static void publishHUD(const long *c, int shown, double mean, double sd, double 
     h.upscaleMs = hudUpscaleKind >= 0 ? hudUpscaleMs : 0;
     ScaleCtx *sc = atomic_load(&scaleCurrent);
     if (sc) {
-        static const char *names[] = {"off", "LS1", "FSR", "BCAS", "Bicubic", "Nearest"};
-        snprintf(h.scaling, sizeof h.scaling, "%s%s %d\u00d7%d \u2192 %d\u00d7%d", names[MAX(0, MIN(sc->mode, 5))],
+        static const char *names[] = {"off", "LS1", "FSR", "BCAS", "Bicubic", "Nearest", "NIS"};
+        snprintf(h.scaling, sizeof h.scaling, "%s%s %d\u00d7%d \u2192 %d\u00d7%d", names[MAX(0, MIN(sc->mode, 6))],
                  sc->mode == 1 && sc->perf ? " perf" : "", sc->inW, sc->inH, sc->outW, sc->outH);
     }
     task_vm_info_data_t vm;
