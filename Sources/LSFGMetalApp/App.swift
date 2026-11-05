@@ -12,6 +12,13 @@ struct LSFGMetalApp: App {
         let model = AppModel()
         // `--onboarding` shows first-launch setup again (handy for screenshots and docs).
         if CommandLine.arguments.contains("--onboarding") { model.hasCompletedSetup = false }
+        // `--install-update`: check, and install a newer version straight away (scripts and testing).
+        if CommandLine.arguments.contains("--install-update") {
+            Task { @MainActor in
+                await model.checkForAppUpdate(userInitiated: true)
+                await model.installAppUpdate()
+            }
+        }
         _model = State(initialValue: model)
     }
 
@@ -24,6 +31,9 @@ struct LSFGMetalApp: App {
         }
         .windowResizability(.contentSize)
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") { Task { await model.checkForAppUpdate(userInitiated: true) } }
+            }
             CommandGroup(after: .appSettings) {
                 Button("Check Setup…") { model.showingSetup = true }
                     .keyboardShortcut(",", modifiers: [.command, .shift])

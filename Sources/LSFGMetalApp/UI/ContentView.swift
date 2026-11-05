@@ -20,7 +20,10 @@ struct ContentView: View {
                     }
                     // Takes its own space above the content rather than covering it.
                     .safeAreaInset(edge: .top, spacing: 0) {
-                        if model.status.problems.isEmpty { HookUpdateBanner(model: model) } else { ProblemBanner(model: model) }
+                        // a new version first: it's often what fixes a problem ("update Lightscale")
+                        if model.appUpdate != nil { AppUpdateBanner(model: model) }
+                        else if !model.status.problems.isEmpty { ProblemBanner(model: model) }
+                        else { HookUpdateBanner(model: model) }
                     }
                 }
             } else {
@@ -29,7 +32,11 @@ struct ContentView: View {
         }
         .task { await model.refresh() }
         .task { await model.followLive() }
+        .task { await model.followAppUpdates() }
         .sheet(isPresented: $model.showingSetup) { SetupSheet(model: model) }
+        .alert(model.notice ?? "", isPresented: Binding(get: { model.notice != nil }, set: { if !$0 { model.notice = nil } })) {
+            Button("OK", role: .cancel) { model.notice = nil }
+        }
         .alert("Something went wrong", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK", role: .cancel) { model.error = nil }
         } message: {
@@ -57,6 +64,36 @@ private struct ProblemBanner: View {
                 .shadow(color: .black.opacity(0.15), radius: 8, y: 2)
             }
             .buttonStyle(.plain)
+            .padding(.top, 10)
+            .frame(maxWidth: .infinity)
+            .transition(.move(edge: .top).combined(with: .opacity))
+        }
+    }
+}
+
+/// A newer version of the app is on GitHub.
+private struct AppUpdateBanner: View {
+    let model: AppModel
+
+    var body: some View {
+        if let release = model.appUpdate {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles").foregroundStyle(.tint)
+                Text("\(AppName.display) \(release.version) is available.").lineLimit(1)
+                Link("What's New", destination: release.page).buttonStyle(.borderless)
+                if model.isInstallingAppUpdate {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button("Update") { Task { await model.installAppUpdate() } }
+                        .buttonStyle(.borderless)
+                        .fontWeight(.semibold)
+                }
+            }
+            .font(.callout)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(.regularMaterial, in: Capsule())
+            .shadow(color: .black.opacity(0.15), radius: 8, y: 2)
             .padding(.top, 10)
             .frame(maxWidth: .infinity)
             .transition(.move(edge: .top).combined(with: .opacity))

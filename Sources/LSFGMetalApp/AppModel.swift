@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 
@@ -16,6 +17,11 @@ final class AppModel {
     private(set) var gptkVersions: [GPTKVersion] = []
     private(set) var installedGPTK: String?
     private(set) var isSwitchingGPTK = false
+    /// A newer version of the app on GitHub, once a check found one.
+    private(set) var appUpdate: AppRelease?
+    private(set) var isInstallingAppUpdate = false
+    /// Shown once, after a check the user asked for ("up to date").
+    var notice: String?
     /// Hooked games run an older hook than this app ships (it was updated since they were installed).
     private(set) var hookUpdateAvailable = false
     private(set) var isUpdatingHook = false
@@ -74,6 +80,39 @@ final class AppModel {
         }
         guard let bundled = bundledHookVersion else { hookUpdateAvailable = false; return }
         hookUpdateAvailable = games.contains { $0.isInstalled } && HookFiles.installedVersion != bundled
+    }
+
+    // MARK: App updates
+
+    /// Checks GitHub Releases at launch and every six hours while the app runs.
+    func followAppUpdates() async {
+        while !Task.isCancelled {
+            await checkForAppUpdate(userInitiated: false)
+            try? await Task.sleep(for: .seconds(6 * 3600))
+        }
+    }
+
+    func checkForAppUpdate(userInitiated: Bool) async {
+        do {
+            appUpdate = try await Updater.newerRelease()
+            if userInitiated, appUpdate == nil { notice = "\(AppName.display) \(Updater.currentVersion) is the newest version." }
+        } catch {
+            if userInitiated { self.error = "Couldn't check for updates: \(error.localizedDescription)" }
+        }
+    }
+
+    /// Downloads and verifies the update, then quits; the new version opens by itself.
+    func installAppUpdate() async {
+        guard let release = appUpdate, !isInstallingAppUpdate else { return }
+        isInstallingAppUpdate = true
+        defer { isInstallingAppUpdate = false }
+        do {
+            let newApp = try await Updater.prepare(release)
+            try Updater.installOnQuit(newApp)
+            NSApplication.shared.terminate(nil)
+        } catch {
+            self.error = error.localizedDescription
+        }
     }
 
     /// Reinstalls the hook for every game that has it: the shared files and each game's proxy. Not while one of them
