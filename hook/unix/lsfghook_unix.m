@@ -569,17 +569,19 @@ static void startDisplayLink(CAMetalLayer *layer);
 // HUD converts its colours to match (main thread).
 static void matchGameColor(CAMetalLayer *o, CAMetalLayer *game) {
     const BOOL changed = o.pixelFormat != game.pixelFormat || !CFEqual(o.colorspace ?: (CGColorSpaceRef)kCFNull, game.colorspace ?: (CGColorSpaceRef)kCFNull)
-        || o.wantsExtendedDynamicRangeContent != game.wantsExtendedDynamicRangeContent;
+        || o.wantsExtendedDynamicRangeContent != game.wantsExtendedDynamicRangeContent
+        || o.EDRMetadata != game.EDRMetadata;
     o.pixelFormat = game.pixelFormat;
     o.colorspace = game.colorspace;
     o.wantsExtendedDynamicRangeContent = game.wantsExtendedDynamicRangeContent;
+    o.EDRMetadata = game.EDRMetadata;   // HDR10 metadata: how macOS tone-maps the game's PQ frames to this display
     static BOOL logged;
     if (changed || !logged) {
         logged = YES;
         CFStringRef name = game.colorspace ? CGColorSpaceCopyName(game.colorspace) : NULL;
-        lsfg_log(@"overlay colour: format %lu, colour space %@, EDR %d -> HUD %s", (unsigned long)game.pixelFormat,
+        lsfg_log(@"overlay colour: format %lu, colour space %@, EDR %d, HDR metadata %@ -> HUD %s", (unsigned long)game.pixelFormat,
                  name ? (__bridge NSString *)name : @"none", game.wantsExtendedDynamicRangeContent,
-                 lsfgHudSetColorSpace(game.colorspace));
+                 game.EDRMetadata ?: @"none", lsfgHudSetColorSpace(game.colorspace));
         if (name) CFRelease(name);
     }
 }
@@ -633,7 +635,11 @@ static BOOL overlayOnGameLayer(void) {
     CAMetalLayer *o = overlay, *game = fgLayer;
     if (!o || !game) return YES;
     const BOOL sameFormat = o.pixelFormat == game.pixelFormat;
-    if (o.superlayer == game && sameFormat) return YES;
+    if (o.superlayer == game && sameFormat) {
+        if (o.EDRMetadata != game.EDRMetadata)   // the game set or changed its HDR10 metadata: follow it, no need to wait
+            dispatch_async(dispatch_get_main_queue(), ^{ if (fgLayer == game) matchGameColor(o, game); });
+        return YES;
+    }
     if (atomic_exchange(&overlayMoving, true)) return NO;
     dispatch_async(dispatch_get_main_queue(), ^{
         CAMetalLayer *g = fgLayer;
