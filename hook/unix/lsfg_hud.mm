@@ -464,27 +464,34 @@ static void convertColors(ImDrawData *data) {
         for (ImDrawVert &v : list->VtxBuffer) v.col = convertColor(v.col, mode);
 }
 
-// The app icon's outline, `size` points square at `p`: the rounded square, the two offset frames ("the frame in
-// between") and the sparkle, from scripts/make-icon.swift (its 824-unit body, y down). All solid: the back frame is
-// drawn only where the front one doesn't cover it, with a small gap.
+// The app icon as an outline, `size` points square at `p` (824-unit grid, y down, after scripts/make-icon.swift):
+// the rounded square; two equal frames offset diagonally ("the frame in between"), centred together; a sparkle in
+// the front one. One line weight; the back frame stops half a line width short of the front one where it would pass behind.
 static void drawIconOutline(ImDrawList *dl, ImVec2 p, float size, float alpha, ImVec4 color) {
     const float k = size / 824, line = size * 0.04f;   // 1.6 pt at 40 pt
+    const float L = line / k;                          // line width in grid units
     auto at = [&](float x, float y) { return ImVec2(p.x + x * k, p.y + y * k); };
     const ImU32 white = ImGui::ColorConvertFloat4ToU32(ImVec4(color.x, color.y, color.z, alpha));
     dl->AddRect(at(0, 0), at(824, 824), white, 185 * k, 0, line);
-    dl->AddRect(at(274, 230), at(694, 530), white, 52 * k, 0, line * 0.8f);
-    // Back frame (130,294)-(550,594): its top edge up to the front frame, the left and bottom edges, and its right
-    // edge up to the front frame.
-    const float r = 52, gap = 1.8f * line / k;
-    dl->PathLineTo(at(274 - gap, 294));
-    dl->PathArcTo(at(130 + r, 294 + r), r * k, -(float)M_PI / 2, -(float)M_PI);
-    dl->PathArcTo(at(130 + r, 594 - r), r * k, (float)M_PI, (float)M_PI / 2);
-    dl->PathArcTo(at(550 - r, 594 - r), r * k, (float)M_PI / 2, 0);
-    dl->PathLineTo(at(550, 530 + gap));
-    dl->PathStroke(white, 0, line * 0.8f);
-    // Sparkle: four points joined by inward curves.
-    const ImVec2 c = at(484, 380);
-    const float sr = 125 * k, in = sr * 0.18f;
+
+    // Frames 420 x 300, the front one 130 right and 130 up; together 550 x 430, centred.
+    const float w = 420, h = 300, d = 130, r = 48;
+    const float bx = 412 - (w + d) / 2, by = 412 - (h + d) / 2 + d;   // back frame's top-left
+    const float fx = bx + d, fy = by - d;                             // front frame's top-left
+    dl->AddRect(at(fx, fy), at(fx + w, fy + h), white, r * k, 0, line);
+    // Back frame: from its top edge (stopping short of the front frame's left edge) round the left and bottom to its
+    // right edge (stopping short of the front frame's bottom edge). Butt ends, so the gap is measured from them.
+    const float stop = L / 2 + L / 2;   // front line's half width + a gap of half a line width
+    dl->PathLineTo(at(fx - stop, by));
+    dl->PathArcTo(at(bx + r, by + r), r * k, -(float)M_PI / 2, -(float)M_PI);
+    dl->PathArcTo(at(bx + r, by + h - r), r * k, (float)M_PI, (float)M_PI / 2);
+    dl->PathArcTo(at(bx + w - r, by + h - r), r * k, (float)M_PI / 2, 0);
+    dl->PathLineTo(at(bx + w, fy + h + stop));
+    dl->PathStroke(white, 0, line);
+
+    // Sparkle, centred in the front frame: four points joined by inward curves.
+    const ImVec2 c = at(fx + w / 2, fy + h / 2);
+    const float sr = 118 * k, in = sr * 0.18f;
     dl->PathLineTo(ImVec2(c.x, c.y - sr));
     dl->PathBezierQuadraticCurveTo(ImVec2(c.x + in, c.y - in), ImVec2(c.x + sr, c.y));
     dl->PathBezierQuadraticCurveTo(ImVec2(c.x + in, c.y + in), ImVec2(c.x, c.y + sr));
