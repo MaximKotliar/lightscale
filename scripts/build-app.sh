@@ -99,7 +99,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleShortVersionString</key><string>$SHORT_VERSION</string>
     <key>CFBundleVersion</key><string>$VERSION</string>
     <key>LSMinimumSystemVersion</key><string>15.0</string>
-    <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
+    <key>LSApplicationCategoryType</key><string>public.app-category.games</string>
+    <!-- Game Mode: as MacGamingFix declares it, so macOS accepts the Game Mode Lightscale turns on for the games. -->
+    <key>LSSupportsGameMode</key><true/>
+    <key>GCSupportsGameMode</key><true/>
     <key>NSHighResolutionCapable</key><true/>
 </dict>
 </plist>

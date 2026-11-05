@@ -2,6 +2,7 @@ import AppKit
 import CursorFence
 import Foundation
 import Observation
+import os
 
 /// What Lightscale does for a game while it runs, besides the hook: macOS Game Mode on, and the cursor fix
 /// (MacGamingFix's) while the game is the app in front. The hook's log says which game runs and its process.
@@ -36,15 +37,42 @@ final class PlaySession {
         Task { gameModeAvailable = await Self.gamePolicyAvailable() }
     }
 
-    /// Called once a second with what the running game wants (nil: none runs).
+    @ObservationIgnored private var goneSince: Date?
+    @ObservationIgnored private var lastGameModeOn = Date.distantPast
+    @ObservationIgnored private var commands: Task<Void, Never>?
+    private static let log = Logger(subsystem: "dev.lightscale.app", category: "play")
+
+    /// Called once a second with what the running game wants (nil: none runs). A game that seems gone for a moment
+    /// (the log between writes, the game list reloading) still counts for 5 seconds, so nothing flickers off.
     func update(_ new: Wanted?) {
-        guard new != wanted else { return }
-        wanted = new
-        syncCursorFix()
+        if new == nil, wanted != nil {
+            let since = goneSince ?? Date()
+            goneSince = since
+            if Date().timeIntervalSince(since) < 5 { return }
+        }
+        goneSince = nil
+        if new != wanted {
+            Self.log.info("game \(new.map { "pid \($0.pid), game mode \($0.gameMode), cursor fix \($0.cursorFix)" } ?? "gone", privacy: .public)")
+            wanted = new
+            syncCursorFix()
+        }
         let wantGameMode = new?.gameMode == true
-        if wantGameMode != gameModeOn {
+        // While the game runs, say "on" again now and then: something else (another app, a system change) may have
+        // put the policy back to automatic.
+        if wantGameMode != gameModeOn || (wantGameMode && Date().timeIntervalSince(lastGameModeOn) > 15) {
             gameModeOn = wantGameMode
-            Task { await Self.setGameMode(wantGameMode ? "on" : "auto") }
+            if wantGameMode { lastGameModeOn = Date() }
+            send(wantGameMode ? "on" : "auto")
+        }
+    }
+
+    /// Game Mode commands run one after another, in order.
+    private func send(_ value: String) {
+        let previous = commands
+        commands = Task {
+            await previous?.value
+            let ok = await Self.setGameMode(value)
+            Self.log.info("game mode \(value, privacy: .public): \(ok ? "done" : "failed", privacy: .public)")
         }
     }
 
@@ -64,8 +92,8 @@ final class PlaySession {
         (try? await Shell.run(xcrun, ["-f", "gamepolicyctl"]))?.status == 0
     }
 
-    private static func setGameMode(_ value: String) async {
-        _ = try? await Shell.run(xcrun, ["gamepolicyctl", "game-mode", "set", value])
+    private static func setGameMode(_ value: String) async -> Bool {
+        (try? await Shell.run(xcrun, ["gamepolicyctl", "game-mode", "set", value]))?.status == 0
     }
 
     private static func setGameModeNow(_ value: String) {
