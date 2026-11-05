@@ -464,7 +464,55 @@ static void convertColors(ImDrawData *data) {
         for (ImDrawVert &v : list->VtxBuffer) v.col = convertColor(v.col, mode);
 }
 
-extern "C" void lsfgHudEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, float scale) {
+// The app icon's outline, `size` points square at `p`: the rounded square, the two offset frames ("the frame in
+// between", the back one dimmer) and the sparkle, from scripts/make-icon.swift (its 824-unit body, y down).
+static void drawIconOutline(ImDrawList *dl, ImVec2 p, float size, float alpha) {
+    const float k = size / 824, line = fmaxf(1.0f, size * 0.07f);
+    auto at = [&](float x, float y) { return ImVec2(p.x + x * k, p.y + y * k); };
+    const ImU32 white = ImGui::GetColorU32(ImVec4(1, 1, 1, alpha)), dim = ImGui::GetColorU32(ImVec4(1, 1, 1, alpha * 0.5f));
+    dl->AddRect(at(0, 0), at(824, 824), white, 185 * k, 0, line);
+    dl->AddRect(at(130, 294), at(550, 594), dim, 52 * k, 0, line * 0.8f);
+    dl->AddRect(at(274, 230), at(694, 530), white, 52 * k, 0, line * 0.8f);
+    // Sparkle: four points joined by inward curves.
+    const ImVec2 c = at(484, 380);
+    const float r = 125 * k, in = r * 0.18f;
+    dl->PathLineTo(ImVec2(c.x, c.y - r));
+    dl->PathBezierQuadraticCurveTo(ImVec2(c.x + in, c.y - in), ImVec2(c.x + r, c.y));
+    dl->PathBezierQuadraticCurveTo(ImVec2(c.x + in, c.y + in), ImVec2(c.x, c.y + r));
+    dl->PathBezierQuadraticCurveTo(ImVec2(c.x - in, c.y + in), ImVec2(c.x - r, c.y));
+    dl->PathBezierQuadraticCurveTo(ImVec2(c.x - in, c.y - in), ImVec2(c.x, c.y - r));
+    dl->PathFillConcave(white);
+}
+
+// The badge: for the first seconds of the game, the app icon's outline and "Lightscale" in the top-left corner
+// (the HUD is in the top-right), so players see it's working.
+static void drawBadge(float alpha, const char *detail) {
+    alpha = fminf(fmaxf(alpha, 0), 1);
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, alpha);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 7));
+    ImGui::SetNextWindowPos(ImVec2(8, 8), ImGuiCond_Always, ImVec2(0, 0));
+    ImGui::Begin("Lightscale badge", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
+                 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
+    const float title = ImGui::GetStyle().FontSizeBase * 1.6f;
+    const bool hasDetail = detail && detail[0];
+    const float icon = hasDetail ? title + ImGui::GetFontSize() + 1 : title * 1.1f;
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    drawIconOutline(ImGui::GetWindowDrawList(), p, icon, alpha);
+    ImGui::Dummy(ImVec2(icon, icon));
+    ImGui::SameLine(0, 7);
+    ImGui::BeginGroup();
+    if (!hasDetail) ImGui::Dummy(ImVec2(0, (icon - title) / 2 - 1));
+    ImGui::PushFont(nullptr, title);
+    ImGui::TextColored(kText, "Lightscale");
+    ImGui::PopFont();
+    if (hasDetail) ImGui::TextColored(kLabel, "%s", detail);
+    ImGui::EndGroup();
+    ImGui::End();
+    ImGui::PopStyleVar(2);
+}
+
+extern "C" void lsfgHudEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, float scale, bool stats, float badgeAlpha,
+                              const char *badgeDetail) {
     static bool ready;
     static CFTimeInterval last;
     if (!ready) { setUp(cb.device); ready = true; }
@@ -473,11 +521,13 @@ extern "C" void lsfgHudEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, fl
     io.DisplaySize = ImVec2(target.width / scale, target.height / scale);
     io.DisplayFramebufferScale = ImVec2(scale, scale);
     const CFTimeInterval now = CACurrentMediaTime();
-    lastDrawn.store(now);
-    startPowerSampling();
     io.DeltaTime = last > 0 ? (float)fmin(fmax(now - last, 1e-4), 0.1) : 1.0f / 60;
     last = now;
-    sampleCost(now);
+    if (stats) {
+        lastDrawn.store(now);
+        startPowerSampling();
+        sampleCost(now);
+    }
 
     MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
     rp.colorAttachments[0].texture = target;
@@ -485,7 +535,8 @@ extern "C" void lsfgHudEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, fl
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
     ImGui_ImplMetal_NewFrame(rp);
     ImGui::NewFrame();
-    drawHUD();
+    if (stats) drawHUD();
+    if (badgeAlpha > 0) drawBadge(badgeAlpha, badgeDetail);
     ImGui::Render();
     convertColors(ImGui::GetDrawData());
     id<MTLRenderCommandEncoder> encoder = [cb renderCommandEncoderWithDescriptor:rp];

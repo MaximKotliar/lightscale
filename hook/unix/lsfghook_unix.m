@@ -467,6 +467,23 @@ static _Atomic bool scaleUpdateQueued;   // an updateScaler is queued or its ups
 static BOOL scalerWanted(void) { return scaleAvailable && config.scaler != 0; }
 // The overlay is needed even without frame generation: to scale the game's frames, or to draw the HUD on them.
 static BOOL overlayWanted(void) { return scalerWanted() || (fgAvailable && config.hud); }
+// The "Lightscale" badge, for the first 5 seconds the overlay shows the game: fades in, stays, fades out. Returns its
+// opacity (0: gone) and writes what's on into `detail`. Display link thread.
+static float badgeAlpha(char *detail, size_t size) {
+    static CFTimeInterval start;
+    const CFTimeInterval now = CACurrentMediaTime();
+    if (start == 0) start = now;
+    const double t = now - start;
+    detail[0] = 0;
+    if (t >= 5) return 0;
+    char fg[48] = "", sc[24] = "";
+    if (atomic_load(&fgOn) && !lsfgMissing) snprintf(fg, sizeof fg, "Frame generation %d\u00d7", config.multiplier);
+    ScaleCtx *s = atomic_load(&scaleCurrent);
+    static const char *names[] = {"", "LS1", "FSR", "BCAS", "Bicubic", "Nearest"};
+    if (s) snprintf(sc, sizeof sc, "%s", names[MAX(0, MIN(s->mode, 5))]);
+    snprintf(detail, size, "%s%s%s", fg, fg[0] && sc[0] ? " \u00b7 " : "", sc);
+    return (float)(t < 0.3 ? t / 0.3 : t < 4 ? 1 : 5 - t);
+}
 // The overlay's width in points (main thread writes it), for the HUD's pixels per point.
 static _Atomic double overlayPointsWide;
 
@@ -862,12 +879,14 @@ static void timingBracket(id<MTLCommandBuffer> cb, int slot, BOOL after, id<MTLT
         [blit copyFromTexture:frame toTexture:dst];
         [blit endEncoding];
     }
-    if (config.hud) {
+    char detail[96];
+    const float badge = badgeAlpha(detail, sizeof detail);
+    if (config.hud || badge > 0) {
         const double points = atomic_load(&overlayPointsWide);
         const float pixelsPerPoint = points > 0 ? (float)(dst.width / points) : 1.0f;
         static bool logged;
         if (!logged) { logged = true; lsfg_log(@"HUD: drawing on %lux%lu at %.2f px/pt", (unsigned long)dst.width, (unsigned long)dst.height, pixelsPerPoint); }
-        lsfgHudEncode(cb, dst, pixelsPerPoint * config.hudScale);
+        lsfgHudEncode(cb, dst, pixelsPerPoint * config.hudScale, config.hud, badge, detail);
     }
     if (timing >= 0) timingBracket(cb, timing, YES, dst);
     trackPresented(drawable);

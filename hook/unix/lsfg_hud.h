@@ -51,8 +51,11 @@ void lsfgHudGameFrame(float ms);
 // or BT.2020 primaries) the HUD converts its sRGB colours so they look as they do in SDR; nil or anything else: as is.
 // Returns a short name for the log. Any thread.
 const char *lsfgHudSetColorSpace(CGColorSpaceRef space);
-// Draws the HUD into `target` on `cb` (display link thread only). `scale`: pixels per point.
-void lsfgHudEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, float scale);
+// Draws into `target` on `cb` (display link thread only). `scale`: pixels per point. `stats`: the performance HUD.
+// `badgeAlpha` > 0: the "Lightscale" badge that shows it's working, at that opacity, with `badgeDetail` under it
+// (what's on, e.g. "Frame generation 2× · LS1"; NULL or "": none).
+void lsfgHudEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, float scale, bool stats, float badgeAlpha,
+                   const char *badgeDetail);
 #ifdef __cplusplus
 }
 #endif
