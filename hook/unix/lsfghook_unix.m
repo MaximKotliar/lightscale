@@ -772,7 +772,7 @@ static void presentSlot(int slot, int generated, CFTimeInterval completedAt) {
 enum { kLsfgTimingSlots = 32, kTimingLsfg = 0, kTimingDisplay = 1 };
 static int timingSlot(id<MTLDevice> device, int kind);
 static double timingRead(int slot);
-static void timingBracket(id<MTLCommandBuffer> cb, int slot, BOOL after);
+static void timingBracket(id<MTLCommandBuffer> cb, int slot, BOOL after, id<MTLTexture> finished);
 
 @interface LSFGDisplayLinkTarget : NSObject <CAMetalDisplayLinkDelegate>
 @end
@@ -820,7 +820,7 @@ static void timingBracket(id<MTLCommandBuffer> cb, int slot, BOOL after);
     }
     id<MTLCommandBuffer> cb = [presentQueue commandBuffer];
     const int timing = config.hud ? timingSlot(cb.device, kTimingDisplay) : -1;
-    if (timing >= 0) timingBracket(cb, timing, NO);
+    if (timing >= 0) timingBracket(cb, timing, NO, nil);
     if (scaled) {
         if (sc->outW < sc->canvasW || sc->outH < sc->canvasH) {   // letterbox: black around the picture
             MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -843,7 +843,7 @@ static void timingBracket(id<MTLCommandBuffer> cb, int slot, BOOL after);
         if (!logged) { logged = true; lsfg_log(@"HUD: drawing on %lux%lu at %.2f px/pt", (unsigned long)dst.width, (unsigned long)dst.height, pixelsPerPoint); }
         lsfgHudEncode(cb, dst, pixelsPerPoint * config.hudScale);
     }
-    if (timing >= 0) timingBracket(cb, timing, YES);
+    if (timing >= 0) timingBracket(cb, timing, YES, dst);
     trackPresented(drawable);
     [cb presentDrawable:drawable];
     [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
@@ -998,15 +998,21 @@ static double timingRead(int slot) {
 }
 
 // A tiny blit timestamped on its outer edge, its start before the pass (after: NO) and its end after it (YES):
-// brackets a pass made of other encoders, and stays right if Metal merges it with the blit next to it.
-static void timingBracket(id<MTLCommandBuffer> cb, int slot, BOOL after) {
+// brackets a pass made of other encoders, and stays right if Metal merges it with the blit next to it. The GPU runs
+// encoders that don't depend on each other at the same time, so the closing one reads a pixel of `finished` (the
+// texture the pass writes): it then waits for every write to it.
+static void timingBracket(id<MTLCommandBuffer> cb, int slot, BOOL after, id<MTLTexture> finished) {
     MTLBlitPassDescriptor *pass = [MTLBlitPassDescriptor blitPassDescriptor];
     MTLBlitPassSampleBufferAttachmentDescriptor *a = pass.sampleBufferAttachments[0];
     a.sampleBuffer = lsfgSamples;
     a.startOfEncoderSampleIndex = after ? MTLCounterDontSample : 2 * slot;
     a.endOfEncoderSampleIndex = after ? 2 * slot + 1 : MTLCounterDontSample;
     id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoderWithDescriptor:pass];
-    [blit fillBuffer:timingMarker range:NSMakeRange(0, 4) value:0];
+    if (finished)
+        [blit copyFromTexture:finished sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(1, 1, 1)
+                     toBuffer:timingMarker destinationOffset:0 destinationBytesPerRow:16 destinationBytesPerImage:16];
+    else
+        [blit fillBuffer:timingMarker range:NSMakeRange(0, 4) value:0];
     [blit endEncoding];
 }
 
