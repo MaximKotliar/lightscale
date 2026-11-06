@@ -52,6 +52,10 @@ After that, Lightscale updates itself: when a new version comes out, it shows a 
    - **Frame rate:** 2× or 4× turns on frame generation. Off turns it off.
    - **Mode:** *Performance* costs less GPU time; *Quality* looks better.
    - **DLSS Replacement:** NSS or MetalFX, for games with DLSS. Turn DLSS on in the game's graphics settings too.
+     In games with FSR 2 or 3, **Replaces** picks which of the game's upscalers to replace, DLSS or FSR. With FSR,
+     Lightscale adds [OptiScaler](https://github.com/optiscaler/OptiScaler) to the game's folder (downloaded from its
+     GitHub page the first time), which turns the game's FSR into DLSS for NSS or MetalFX to replace. Choose FSR in the
+     game's settings then. Switching back to DLSS, or Uninstall, removes it.
    - **Display Scaling:** set the game to a lower resolution, then pick an upscaler here. NIS and Nearest work
      without Lossless Scaling.
    - **Performance HUD:** turns the overlay on, with a size slider.
@@ -118,7 +122,8 @@ Scaling, Arm, Apple or CodeWeavers. Lossless Scaling is not included: Lightscale
 ships with Arm's trained weights, which are licensed by Arm under the Arm AI Model Community License, not MIT. Using
 NSS means agreeing to its acceptable-use terms, which the app shows next to the NSS setting and under Help. The
 cursor fix is [MacGamingFix](https://github.com/evertjr/MacGamingFix)'s, by Evert Junior (MIT; its license is in
-`Sources/CursorFence`).
+`Sources/CursorFence`). FSR replacement uses OptiScaler (GPL-3.0), which isn't included: Lightscale downloads a
+pinned, checked release from OptiScaler's GitHub page when you turn it on.
 
 # For developers
 

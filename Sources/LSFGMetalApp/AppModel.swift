@@ -13,6 +13,8 @@ final class AppModel {
     private(set) var live = LiveStats.Snapshot()
     private(set) var isChecking = false
     private(set) var busyGames: Set<URL> = []
+    /// Games whose FSR goes through Lightscale's OptiScaler (FSR replacement) instead of DLSS.
+    private(set) var fsrPathGames: Set<URL> = []
     /// GPTK versions the app can switch CrossOver to, and the one CrossOver has now.
     private(set) var gptkVersions: [GPTKVersion] = []
     private(set) var installedGPTK: String?
@@ -64,6 +66,7 @@ final class AppModel {
                 return game
             }
         games = (scanned + custom).sorted(by: Self.order)
+        fsrPathGames = Set(games.filter { OptiScaler.installedName(in: $0) != nil }.map(\.exe))
         folderProfiles = Dictionary(uniqueKeysWithValues: games.compactMap { game in
             GameFolderProfile.load(for: game).map { (game.id, $0) }
         })
@@ -146,8 +149,33 @@ final class AppModel {
     func uninstall(_ game: Game) async {
         let others = games.contains { $0.bottle == game.bottle && $0.isInstalled && $0.exe != game.exe }
         await perform(on: game) {
+            try await OptiScaler.remove(game, crossOver: self.status.crossOver)
             try await HookInstaller.uninstall(game, crossOver: self.status.crossOver, lastInBottle: !others)
         }
+        refreshFSRPath(game)
+    }
+
+    /// Which of the game's upscalers Lightscale replaces: its DLSS (as D3DMetal hands it over), or its FSR (OptiScaler
+    /// in the game's folder turns FSR into DLSS first). The MetalFX/NSS choice stays the same either way.
+    func setReplacesFSR(_ fsr: Bool, for game: Game) async {
+        guard fsr != fsrPathGames.contains(game.exe) else { return }
+        if runningGame()?.exe == game.exe {
+            error = "Quit \(game.name) first: its folder can't change while it runs."
+            return
+        }
+        await perform(on: game) {
+            if fsr {
+                guard let crossOver = self.status.crossOver else { throw InstallError.crossOverMissing }
+                try await OptiScaler.install(game, crossOver: crossOver)
+            } else {
+                try await OptiScaler.remove(game, crossOver: self.status.crossOver)
+            }
+        }
+        refreshFSRPath(game)
+    }
+
+    private func refreshFSRPath(_ game: Game) {
+        if OptiScaler.installedName(in: game) != nil { fsrPathGames.insert(game.exe) } else { fsrPathGames.remove(game.exe) }
     }
 
     /// Adds a game the scan didn't find (any .exe inside a CrossOver bottle).

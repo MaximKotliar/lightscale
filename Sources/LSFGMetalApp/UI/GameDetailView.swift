@@ -127,36 +127,53 @@ private struct UpscalerCard: View {
 
     var body: some View {
         let dlss = game.upscalers.contains(.dlss)
+        let fsr = game.upscalers.contains(.fsr)
+        let viaFSR = model.fsrPathGames.contains(game.exe)
         let p = profile.wrappedValue
         let ready = NSSFiles.isReady
         Card(title: "Upscaling") {
-            if dlss {
+            if dlss || fsr {
                 if !game.bottle.dlssEnabled {
-                    Label("DLSS is off in the “\(game.bottle.name)” bottle, so the game can't offer it. Turn on DLSS in the bottle's settings in CrossOver, then restart the game.",
+                    Label("DLSS is off in the “\(game.bottle.name)” bottle, so the game can't offer it\(fsr ? " and FSR can't be replaced" : ""). Turn on DLSS in the bottle's settings in CrossOver, then restart the game.",
                           systemImage: "exclamationmark.triangle.fill")
                         .font(.callout)
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                SettingRow(title: "DLSS Replacement", caption: replacementCaption(p.upscaler, ready: ready), warn: p.upscaler == "nss" && !ready) {
-                    Picker("DLSS Replacement", selection: profile.upscaler) {
-                        Text("MetalFX").tag("metalfx")
-                        Text("NSS").tag("nss")
-                    }
-                    .labelsHidden()
-                }
-                if p.upscaler == "nss" {
-                    SettingRow(title: "NSS quality", caption: "Fast: about ⅔ of Mid's GPU time, as sharp in motion, fine detail in still scenes like MetalFX. High costs about 3× Mid.") {
-                        Picker("NSS quality", selection: profile.nssQuality) {
-                            if p.nssQuality == "low" { Text("Low").tag("low") }
-                            Text("Fast").tag("fast")
-                            Text("Mid").tag("mid")
-                            Text("High").tag("high")
+                if fsr {
+                    SettingRow(title: "Replaces", caption: pathCaption(viaFSR: viaFSR, dlss: dlss)) {
+                        if model.busyGames.contains(game.exe) { ProgressView().controlSize(.small) }
+                        Picker("Replaces", selection: Binding(get: { viaFSR }, set: { on in Task { await model.setReplacesFSR(on, for: game) } })) {
+                            Text(dlss ? "DLSS" : "Off").tag(false)
+                            Text("FSR").tag(true)
                         }
                         .pickerStyle(.segmented)
                         .labelsHidden()
+                        .disabled(model.busyGames.contains(game.exe))
                     }
-                    NSSTermsNote()
+                }
+                if dlss || viaFSR {
+                    SettingRow(title: fsr ? "Replace with" : "DLSS Replacement", caption: replacementCaption(p.upscaler, ready: ready, viaFSR: viaFSR),
+                               warn: p.upscaler == "nss" && !ready) {
+                        Picker("Replace with", selection: profile.upscaler) {
+                            Text("MetalFX").tag("metalfx")
+                            Text("NSS").tag("nss")
+                        }
+                        .labelsHidden()
+                    }
+                    if p.upscaler == "nss" {
+                        SettingRow(title: "NSS quality", caption: "Fast: about ⅔ of Mid's GPU time, as sharp in motion, fine detail in still scenes like MetalFX. High costs about 3× Mid.") {
+                            Picker("NSS quality", selection: profile.nssQuality) {
+                                if p.nssQuality == "low" { Text("Low").tag("low") }
+                                Text("Fast").tag("fast")
+                                Text("Mid").tag("mid")
+                                Text("High").tag("high")
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                        }
+                        NSSTermsNote()
+                    }
                 }
             } else {
                 NoDLSSNote(game: game)
@@ -183,12 +200,22 @@ private struct UpscalerCard: View {
         }
     }
 
-    private func replacementCaption(_ upscaler: String, ready: Bool) -> String {
+    private func pathCaption(viaFSR: Bool, dlss: Bool) -> String {
+        if viaFSR {
+            return "The game's FSR goes through OptiScaler (GPL-3.0), which Lightscale put in the game's folder. Choose FSR in the game's graphics settings." + (dlss ? " Its DLSS is still replaced too." : "")
+        }
+        return (dlss ? "Which of the game's upscalers to replace. " : "Replace the game's FSR. ")
+            + "FSR: Lightscale adds OptiScaler (GPL-3.0, downloaded from its GitHub page the first time) to the game's folder."
+    }
+
+    private func replacementCaption(_ upscaler: String, ready: Bool, viaFSR: Bool) -> String {
+        let what = viaFSR ? "the game's FSR" : "the game's DLSS"
+        let enable = viaFSR ? "Choose FSR in the game's graphics settings." : "Enable DLSS in the game's graphics settings."
         if upscaler == "nss" {
             if !ready { return "NSS files aren't installed yet: uninstall and install the game again." }
-            return "Runs instead of the game's DLSS. Enable DLSS in the game's graphics settings. NSS: a sharper, more stable image than MetalFX at about the same GPU cost (Mid)."
+            return "Runs instead of \(what). \(enable) NSS: a sharper, more stable image than MetalFX at about the same GPU cost (Mid)."
         }
-        return "Runs instead of the game's DLSS. Enable DLSS in the game's graphics settings."
+        return "Runs instead of \(what). \(enable)"
     }
 
     private func scalingCaption(_ scaler: String) -> String {
