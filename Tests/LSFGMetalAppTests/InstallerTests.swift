@@ -115,10 +115,11 @@ import Testing
     #expect(FileManager.default.fileExists(atPath: folder.appending(path: ".lsfg/profile.json").path))
     let loaded = GameFolderProfile.load(for: game)
     #expect(loaded?.enabled == false && loaded?.multiplier == 4)
-    // The hook reads these keys.
+    // The hook reads these keys (gameMode and cursorFix are the app's own).
     let json = try JSONSerialization.jsonObject(with: Data(contentsOf: GameFolderProfile.url(for: game))) as? [String: Any]
     #expect(Set(json?.keys.map { $0 } ?? []) == ["enabled", "multiplier", "performance", "flowScale", "bufferMs", "upscaler", "nssQuality",
-                                                  "scaler", "scalerSharpness", "scalerPerformance", "hud", "hudScale"])
+                                                  "scaler", "scalerSharpness", "scalerPerformance", "hud", "hudScale",
+                                                  "gameMode", "cursorFix"])
     GameFolderProfile.remove(for: game)
     #expect(!FileManager.default.fileExists(atPath: folder.appending(path: ".lsfg").path))
 }
