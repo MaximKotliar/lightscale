@@ -10,6 +10,7 @@ struct GameDetailView: View {
             VStack(alignment: .leading, spacing: 22) {
                 Header(game: game, model: model)
                 SupportRow(game: game)
+                GameProgramCard(game: game, model: model)
                 if case let .blocked(reason) = game.status {
                     Label(blockedExplanation(reason), systemImage: "info.circle")
                         .foregroundStyle(.secondary)
@@ -29,7 +30,6 @@ struct GameDetailView: View {
     }
 
     private func blockedExplanation(_ reason: String) -> String {
-        if reason.hasPrefix("Anti-cheat") { return "This game uses anti-cheat. Changing what it loads could get your account banned, so it's left alone." }
         if reason.hasPrefix("Another mod") { return "\(reason). Remove that mod to use frame generation here." }
         if reason == "32-bit game" { return "Only 64-bit games are supported." }
         return "This game doesn't load a DLL the hook can use. Frame generation isn't available for it yet."
@@ -281,6 +281,41 @@ private struct WhilePlayingCard: View {
                 Toggle("Cursor fix", isOn: binding(\.cursorFix)).labelsHidden()
             }
         }
+    }
+}
+
+/// The exe the hook goes next to, out of every one in the game's folder that can take it. A game's
+/// folder may hold a launcher stub that can't (GTA V's PlayGTAV.exe) next to the real game.
+private struct GameProgramCard: View {
+    let game: Game
+    let model: AppModel
+
+    var body: some View {
+        Group {
+            if let choices = model.exeChoices[game.id], choices.contains(where: { $0 != game.exe }) {
+                let options = choices.contains(game.exe) ? choices : [game.exe] + choices
+                Card(title: "Game Program") {
+                    SettingRow(title: "Program", caption: game.isInstalled
+                        ? "Uninstall to pick another program."
+                        : "The program the game runs as. Programs that can't take the hook, like launchers, aren't listed.") {
+                        Picker("Program", selection: Binding(get: { game.exe }, set: { model.chooseExe($0, for: game) })) {
+                            ForEach(options, id: \.self) { exe in
+                                Text(relativePath(exe)).tag(exe)
+                            }
+                        }
+                        .labelsHidden()
+                        .fixedSize()
+                        .disabled(game.isInstalled)
+                    }
+                }
+            }
+        }
+        .task(id: game.id) { await model.loadExeChoices(for: game) }
+    }
+
+    private func relativePath(_ exe: URL) -> String {
+        let root = game.root.path + "/"
+        return exe.path.hasPrefix(root) ? String(exe.path.dropFirst(root.count)) : exe.lastPathComponent
     }
 }
 

@@ -51,6 +51,19 @@ struct Game: Identifiable, Hashable, Sendable {
     var isCustom = false
     /// Upscalers found in the game's folder.
     var upscalers: Set<UpscalerTech> = []
+    /// Where the game's programs are searched: its Steam folder, or the folder of an exe added by hand.
+    var root: URL
+
+    init(name: String, bottle: Bottle, exe: URL, status: Status, isCustom: Bool = false,
+         upscalers: Set<UpscalerTech> = [], root: URL? = nil) {
+        self.name = name
+        self.bottle = bottle
+        self.exe = exe
+        self.status = status
+        self.isCustom = isCustom
+        self.upscalers = upscalers
+        self.root = root ?? exe.deletingLastPathComponent()
+    }
 
     var id: URL { exe }
     var folder: URL { exe.deletingLastPathComponent() }
@@ -63,11 +76,9 @@ enum GameScanner {
                                                 "SteamVR", "Proton Experimental"]
     /// Executables that are tools around a game rather than the game.
     private static var notGameExe: Regex<Substring> { /(?i)crash|unins|setup|redist|launcher|helper|report|prereq|vc_?redist|dxsetup|quickbms|installer|update|benchmark|cefprocess|webhelper|7z/ }
-    /// Signs of kernel or online anti-cheat: injecting there risks a ban.
-    private static var antiCheat: Regex<Substring> { /(?i)easyanticheat|battleye|beservice|eaanticheat|vanguard|vgk|nprotect|xigncode|anticheat|anti_cheat|denuvo.?anti/ }
 
-    /// Steam games in every bottle.
-    static func scan(bottles: [Bottle]) async -> [Game] {
+    /// Steam games in every bottle. `chosen` maps a game folder's path to the exe the user picked for it.
+    static func scan(bottles: [Bottle], chosen: [String: String] = [:]) async -> [Game] {
         await withTaskGroup(of: [Game].self) { group in
             for bottle in bottles {
                 group.addTask {
@@ -75,7 +86,9 @@ enum GameScanner {
                         let common = library.appending(path: "common")
                         let folders = (try? FileManager.default.contentsOfDirectory(at: common, includingPropertiesForKeys: nil)) ?? []
                         return folders.filter { !notGames.contains($0.lastPathComponent) }
-                            .compactMap { game(in: $0, bottle: bottle) }
+                            .compactMap { folder in
+                                game(in: folder, bottle: bottle, chosen: chosen[folder.path].map { URL(fileURLWithPath: $0) })
+                            }
                     }
                 }
             }
@@ -85,35 +98,45 @@ enum GameScanner {
         }
     }
 
-    /// The main executable of the game folder: the .exe named most like the folder, else the
-    /// largest. (Unity and similar engines ship a small launcher exe next to a big player DLL.)
-    static func game(in folder: URL, bottle: Bottle) -> Game? {
+    /// The main executable of the game folder: the one the user chose, else the .exe named most like
+    /// the folder, else the largest. (Unity and similar engines ship a small launcher exe next to a big
+    /// player DLL.) When that one can't take the hook, the best one that can is used instead
+    /// (GTA V: PlayGTAV.exe only starts the Rockstar Launcher; GTA5_Enhanced.exe is the game).
+    static func game(in folder: URL, bottle: Bottle, chosen: URL? = nil) -> Game? {
         let fm = FileManager.default
         guard let walker = fm.enumerator(at: folder, includingPropertiesForKeys: [.fileSizeKey, .isSymbolicLinkKey],
                                          options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return nil }
-        var best: (url: URL, score: Int)?
-        var antiCheatFound: String?
+        var exes: [(url: URL, score: Int)] = []
         var upscalers: Set<UpscalerTech> = []
         func squashed(_ s: String) -> String { s.lowercased().filter { $0.isLetter || $0.isNumber } }
         let folderKey = squashed(folder.lastPathComponent)
         for case let url as URL in walker {
-            // upscaler libraries can sit deep (Unreal: Plugins/…/Binaries/ThirdParty/Win64); the exe and anti-cheat don't
+            // upscaler libraries can sit deep (Unreal: Plugins/…/Binaries/ThirdParty/Win64); the exe doesn't
             if walker.level > 9 { walker.skipDescendants(); continue }
             let name = url.lastPathComponent
             if let tech = UpscalerTech.matching(fileName: name) { upscalers.insert(tech) }
-            guard walker.level <= 4 else { continue }   // as before for the exe and anti-cheat
-            if antiCheatFound == nil, name.contains(antiCheat) { antiCheatFound = name }
+            guard walker.level <= 4 else { continue }   // the exe doesn't sit that deep
             guard url.pathExtension.lowercased() == "exe", !name.contains(notGameExe) else { continue }
             let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isSymbolicLinkKey])
             guard values?.isSymbolicLink != true, let size = values?.fileSize, size > 100_000 else { continue }
             let exeKey = squashed(url.deletingPathExtension().lastPathComponent)
             let nameMatch = !exeKey.isEmpty && (folderKey.contains(exeKey) || exeKey.contains(folderKey))
             let score = (nameMatch ? 1 << 40 : 0) + size
-            if score > (best?.score ?? 0) { best = (url, score) }
+            exes.append((url, score))
         }
-        guard let exe = best?.url else { return nil }
+        exes.sort { $0.score > $1.score }
+        let exe: URL
+        if let chosen, fm.fileExists(atPath: chosen.path), chosen.path.hasPrefix(folder.path + "/") {
+            exe = chosen
+        } else if let first = exes.first?.url {
+            exe = status(exe: first) == .blocked(noProxyReason)
+                ? exes.first { loadsAProxy($0.url) }?.url ?? first
+                : first
+        } else {
+            return nil
+        }
         return Game(name: folder.lastPathComponent, bottle: bottle, exe: exe,
-                    status: status(exe: exe, antiCheat: antiCheatFound), upscalers: upscalers)
+                    status: status(exe: exe), upscalers: upscalers, root: folder)
     }
 
     /// Upscaler libraries under `folder` (for games added by hand, whose root folder isn't known: the exe's folder).
@@ -131,15 +154,49 @@ enum GameScanner {
     /// A game the user picked by hand (any .exe inside a bottle).
     static func game(exe: URL, bottle: Bottle) -> Game {
         Game(name: exe.deletingPathExtension().lastPathComponent, bottle: bottle, exe: exe,
-             status: status(exe: exe, antiCheat: nil), upscalers: upscalers(in: exe.deletingLastPathComponent()))
+             status: status(exe: exe), upscalers: upscalers(in: exe.deletingLastPathComponent()))
     }
 
-    static func status(exe: URL, antiCheat: String?) -> Game.Status {
+    /// Programs under `root` the hook can go into, largest first (tools like crash reporters and
+    /// uninstallers left out). For Game program, where the user picks the game's exe.
+    static func hookableExes(in root: URL, maxLevel: Int = 4) -> [URL] {
+        // relative paths, so results keep root's spelling (the URL walker resolves /var to /private/var)
+        guard let walker = FileManager.default.enumerator(atPath: root.path) else { return [] }
+        var found: [(url: URL, size: Int)] = []
+        while let relative = walker.nextObject() as? String {
+            if walker.level >= maxLevel { walker.skipDescendants() }
+            let name = (relative as NSString).lastPathComponent
+            guard !name.hasPrefix("."), (name as NSString).pathExtension.lowercased() == "exe",
+                  !name.contains(notGameExe), walker.fileAttributes?[.type] as? FileAttributeType == .typeRegular,
+                  let size = walker.fileAttributes?[.size] as? Int, size > 100_000 else { continue }
+            let url = root.appending(path: relative)
+            if loadsAProxy(url) { found.append((url, size)) }
+        }
+        return found.sorted { $0.size > $1.size }.map(\.url)
+    }
+
+    /// The exe to use for one the user picked by hand. A pick that can't take the hook is often a
+    /// launcher stub (GTA V's PlayGTAV.exe), so the largest exe next to it that can is used instead.
+    static func gameExe(forPicked exe: URL) -> URL {
+        guard status(exe: exe) == .blocked(noProxyReason) else { return exe }
+        return hookableExes(in: exe.deletingLastPathComponent(), maxLevel: 1).first ?? exe
+    }
+
+    /// Whether the exe loads a DLL the hook can proxy (even if another mod already took its place).
+    static func loadsAProxy(_ exe: URL) -> Bool {
+        switch status(exe: exe) {
+        case .installed, .ready: true
+        case .blocked(let reason): reason.hasPrefix("Another mod")
+        }
+    }
+
+    static let noProxyReason = "Doesn't load dinput8 or version.dll"
+
+    static func status(exe: URL) -> Game.Status {
         let folder = exe.deletingLastPathComponent()
         if let proxy = ProxyDLL.allCases.first(where: { HookFiles.isOurProxy(folder.appending(path: $0.fileName)) }) {
             return .installed(proxy)
         }
-        if let antiCheat { return .blocked("Anti-cheat (\(antiCheat))") }
         guard let data = try? Data(contentsOf: exe, options: .mappedIfSafe), let info = try? PEFile.info(of: data) else {
             return .blocked("Not a Windows program")
         }
@@ -154,7 +211,7 @@ enum GameScanner {
             imports.formUnion(localInfo.imports)
         }
         let candidates = ProxyDLL.allCases.filter { imports.contains($0.fileName) }
-        guard !candidates.isEmpty else { return .blocked("Doesn't load dinput8 or version.dll") }
+        guard !candidates.isEmpty else { return .blocked(noProxyReason) }
         // Skip a proxy name another mod already uses in this folder.
         guard let proxy = candidates.first(where: { !FileManager.default.fileExists(atPath: folder.appending(path: $0.fileName).path) }) else {
             return .blocked("Another mod uses \(candidates[0].fileName)")

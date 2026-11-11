@@ -27,8 +27,7 @@ frame costs, so you tune by measurement instead of by feel.
 - Optional: [Lossless Scaling](https://store.steampowered.com/app/993090/) from Steam, installed in a CrossOver bottle,
   for frame generation and display scaling
 
-Lightscale works with 64-bit DirectX games. It leaves out games with anti-cheat, because changing them could get your
-account banned, and 32-bit games.
+Lightscale works with 64-bit DirectX games. It leaves out 32-bit games.
 
 ## Install
 
@@ -132,7 +131,7 @@ pinned, checked release from OptiScaler's GitHub page when you turn it on.
 Its data lives in `~/Library/Application Support/Lightscale` and the hook logs to `~/Library/Logs/Lightscale.log`. On first launch the app moves the data from the old `lsfg-metal` folder and leaves a link there, so bottles set up before the rename keep working.
 
 - **First launch:** a one-time setup checklist (Apple silicon, CrossOver, the game hook; optionally your Steam copy of Lossless Scaling, with the frame-generation and display-scaling kernels for it). Without Lossless Scaling, NSS/MetalFX and the HUD still work; frame generation and display scaling say they need it. After that, setup only reappears as a small banner if something breaks, for example after a Lossless Scaling update. **Check Setup…** (⇧⌘,) opens it any time.
-- **Games:** Steam games from every CrossOver bottle, plus any `.exe` you add with **Add Game** (remembered across launches; right-click to remove). Install picks the right proxy DLL from the game's imports. Games with anti-cheat, 32-bit games, and folders where another mod uses the proxy name are explained and left alone.
+- **Games:** Steam games from every CrossOver bottle, plus any `.exe` you add with **Add Game** (remembered across launches; right-click to remove). Install picks the right proxy DLL from the game's imports. If the exe found or picked can't take the hook (a launcher stub such as GTA V's `PlayGTAV.exe`), the largest one that can is used instead, and **Game program** lists every exe in the game's folder the hook can go into, so you can choose. 32-bit games and folders where another mod uses the proxy name are explained and left alone.
 - **Per-game profiles:** frame rate Off / 2× / 4×, performance or quality mode, motion detail and pacing buffer for each game. They're stored in each game's folder (`.lsfg/profile.json`, next to the proxy DLL), so every program the game runs shares them, and the hook picks up changes within a second, even mid-game.
 - **GPTK picker:** each game can name the Game Porting Toolkit version it should run with, and the app offers to switch CrossOver to it. CrossOver has one GPTK for all bottles, so a switch applies to every game and needs Steam closed. macOS asks once to let the app change CrossOver (App Management). `scripts/build-app.sh` bundles the versions it finds in `GPTK_SOURCES` (default: `~/Applications/CrossOver-GPTK-3.0-backup/apple_gptk` and `~/Applications/GPTK-4.0b3/lib`). They're never committed. A version CrossOver had that the app doesn't carry is saved to `~/Library/Application Support/Lightscale/gptk` before it's replaced.
 - **Upscaling:** two settings that stack. *DLSS Replacement* (games with DLSS) runs MetalFX or NSS in place of the game's DLSS. *Display Scaling* (any game) scales the finished frames up to the screen with Lossless Scaling's LS1, FSR, BCAS or bicubic, or with NIS (NVIDIA Image Scaling, [nis-metal](https://github.com/MaximKotliar/nis-metal)) or nearest, which need no Lossless Scaling.

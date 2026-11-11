@@ -90,6 +90,8 @@ struct ProfileFile: Codable, Equatable, Sendable {
     var games: [String: GameProfile] = [:]
     /// Paths of .exe files added with Add Game.
     var custom: [String] = []
+    /// The exe the user chose with Game program, by the Steam game folder's path.
+    var exes: [String: String] = [:]
 
     init() {}
 
@@ -98,6 +100,7 @@ struct ProfileFile: Codable, Equatable, Sendable {
         self.default = try c.decodeIfPresent(GameProfile.self, forKey: .default) ?? GameProfile()
         games = try c.decodeIfPresent([String: GameProfile].self, forKey: .games) ?? [:]
         custom = try c.decodeIfPresent([String].self, forKey: .custom) ?? []
+        exes = try c.decodeIfPresent([String: String].self, forKey: .exes) ?? [:]
     }
 
     static var url: URL { HookFiles.root.appending(path: "profiles.json") }

@@ -55,9 +55,17 @@ final class AppModel {
         refreshGPTK()
         profiles = ProfileFile.load()
         let bottles = Bottle.all()
-        let scanned = await GameScanner.scan(bottles: bottles)
-        // Games added by hand, if their .exe is still there and inside a bottle.
-        let custom = profiles.custom.map { URL(fileURLWithPath: $0) }
+        let scanned = await GameScanner.scan(bottles: bottles, chosen: profiles.exes)
+        // Games added by hand, if their .exe is still there and inside a bottle. A launcher picked
+        // before Add Game looked past launchers is swapped for the game's exe here.
+        let customPaths = profiles.custom.map { GameScanner.gameExe(forPicked: URL(fileURLWithPath: $0)).path }
+            .reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
+        if customPaths != profiles.custom {
+            var updated = profiles
+            updated.custom = customPaths
+            save(updated)
+        }
+        let custom = customPaths.map { URL(fileURLWithPath: $0) }
             .filter { exe in FileManager.default.fileExists(atPath: exe.path) && !scanned.contains { $0.exe == exe } }
             .compactMap { exe -> Game? in
                 guard let bottle = bottles.first(where: { exe.path.hasPrefix($0.url.path + "/") }) else { return nil }
@@ -66,6 +74,7 @@ final class AppModel {
                 return game
             }
         games = (scanned + custom).sorted(by: Self.order)
+        exeChoices = [:]
         fsrPathGames = Set(games.filter { OptiScaler.installedName(in: $0) != nil }.map(\.exe))
         folderProfiles = Dictionary(uniqueKeysWithValues: games.compactMap { game in
             GameFolderProfile.load(for: game).map { (game.id, $0) }
@@ -179,10 +188,14 @@ final class AppModel {
     }
 
     /// Adds a game the scan didn't find (any .exe inside a CrossOver bottle).
-    func addGame(exe: URL) {
-        guard let bottle = Bottle.all().first(where: { exe.path.hasPrefix($0.url.path + "/") }) else {
+    func addGame(exe picked: URL) {
+        guard let bottle = Bottle.all().first(where: { picked.path.hasPrefix($0.url.path + "/") }) else {
             error = "That program isn't inside a CrossOver bottle."
             return
+        }
+        let exe = GameScanner.gameExe(forPicked: picked)
+        if exe != picked {
+            notice = "\(picked.lastPathComponent) only starts the game, so \(exe.lastPathComponent) from the same folder was added instead."
         }
         if !games.contains(where: { $0.exe == exe }) {
             var game = GameScanner.game(exe: exe, bottle: bottle)
@@ -195,6 +208,39 @@ final class AppModel {
             save(updated)
         }
         selection = exe
+    }
+
+    /// Programs in the game's folder the hook can go into, for Game program (searched on first look).
+    private(set) var exeChoices: [Game.ID: [URL]] = [:]
+
+    func loadExeChoices(for game: Game) async {
+        guard exeChoices[game.id] == nil else { return }
+        let root = game.root
+        let found = await Task.detached(priority: .userInitiated) { GameScanner.hookableExes(in: root) }.value
+        exeChoices[game.id] = found
+    }
+
+    /// Makes `exe` the game's program (the hook goes next to it). Only while the hook isn't installed.
+    func chooseExe(_ exe: URL, for game: Game) {
+        guard exe != game.exe, !game.isInstalled,
+              let i = games.firstIndex(where: { $0.id == game.id }) else { return }
+        var updated = profiles
+        if game.isCustom {
+            guard !games.contains(where: { $0.exe == exe }) else { selection = exe; return }
+            updated.custom = updated.custom.map { $0 == game.exe.path ? exe.path : $0 }
+            var new = GameScanner.game(exe: exe, bottle: game.bottle)
+            new.isCustom = true
+            games[i] = new
+        } else {
+            updated.exes[game.root.path] = exe.path
+            guard let new = GameScanner.game(in: game.root, bottle: game.bottle, chosen: exe) else { return }
+            games[i] = new
+        }
+        save(updated)
+        let new = games[i]
+        exeChoices[new.id] = exeChoices[game.id]
+        folderProfiles[new.id] = GameFolderProfile.load(for: new)
+        selection = new.id
     }
 
     /// Takes a hand-added game off the list (it must be uninstalled first).
@@ -303,7 +349,7 @@ final class AppModel {
         defer { busyGames.remove(game.exe) }
         do { try await work() } catch { self.error = error.localizedDescription }
         if let i = games.firstIndex(where: { $0.exe == game.exe }) {
-            games[i].status = GameScanner.status(exe: game.exe, antiCheat: nil)
+            games[i].status = GameScanner.status(exe: game.exe)
         }
     }
 }

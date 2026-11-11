@@ -70,7 +70,7 @@ import Testing
     try await HookInstaller.install(game, crossOver: crossOver)
     #expect(HookFiles.isOurProxy(gameDir.appending(path: "version.dll")))
     #expect(HookInstaller.bottleIsSetUp(bottle))
-    #expect(GameScanner.status(exe: exe, antiCheat: nil) == .installed(.version))
+    #expect(GameScanner.status(exe: exe) == .installed(.version))
 
     game.status = .installed(.version)
     try await HookInstaller.uninstall(game, crossOver: crossOver, lastInBottle: true)
