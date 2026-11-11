@@ -56,19 +56,18 @@ final class AppModel {
         profiles = ProfileFile.load()
         let bottles = Bottle.all()
         let scanned = await GameScanner.scan(bottles: bottles, chosen: profiles.exes)
-        // Games added by hand, if their .exe is still there and inside a bottle. A launcher picked
-        // before Add Game looked past launchers is swapped for the game's exe here.
-        let customPaths = profiles.custom.map { GameScanner.gameExe(forPicked: URL(fileURLWithPath: $0)).path }
-            .reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
-        if customPaths != profiles.custom {
-            var updated = profiles
-            updated.custom = customPaths
-            save(updated)
+        // Games added by hand, if their .exe is still there and has a bottle (the one it's in, or the one
+        // picked for it). A launcher picked before Add Game looked past launchers is swapped for the game's exe.
+        var updated = profiles
+        for path in profiles.custom {
+            let exe = GameScanner.gameExe(forPicked: URL(fileURLWithPath: path)).path
+            if exe != path { updated.renameCustom(path, to: exe) }
         }
-        let custom = customPaths.map { URL(fileURLWithPath: $0) }
+        save(updated)
+        let custom = profiles.custom.map { URL(fileURLWithPath: $0) }
             .filter { exe in FileManager.default.fileExists(atPath: exe.path) && !scanned.contains { $0.exe == exe } }
             .compactMap { exe -> Game? in
-                guard let bottle = bottles.first(where: { exe.path.hasPrefix($0.url.path + "/") }) else { return nil }
+                guard let bottle = bottle(for: exe, among: bottles) else { return nil }
                 var game = GameScanner.game(exe: exe, bottle: bottle)
                 game.isCustom = true
                 return game
@@ -187,26 +186,70 @@ final class AppModel {
         if OptiScaler.installedName(in: game) != nil { fsrPathGames.insert(game.exe) } else { fsrPathGames.remove(game.exe) }
     }
 
-    /// Adds a game the scan didn't find (any .exe inside a CrossOver bottle).
+    /// The bottle that runs a game added by hand: the one its exe is in, else the one picked for it.
+    private func bottle(for exe: URL, among bottles: [Bottle]) -> Bottle? {
+        if let inside = bottles.first(where: { exe.path.hasPrefix($0.url.path + "/") }) { return inside }
+        return profiles.customBottles[exe.path].flatMap { Bottle(folder: URL(fileURLWithPath: $0)) }
+    }
+
+    /// A game picked with Add Game from outside every bottle, waiting for the user to say which bottle runs it.
+    struct PendingGame: Identifiable, Equatable {
+        let exe: URL
+        let bottles: [Bottle]
+        var id: URL { exe }
+    }
+
+    var pendingGame: PendingGame?
+
+    /// Adds a game the scan didn't find: any .exe. One inside a bottle runs there; for one elsewhere on the
+    /// Mac (games kept outside bottles, like on an external drive) the only bottle is used, or the user picks.
     func addGame(exe picked: URL) {
-        guard let bottle = Bottle.all().first(where: { picked.path.hasPrefix($0.url.path + "/") }) else {
-            error = "That program isn't inside a CrossOver bottle."
-            return
-        }
         let exe = GameScanner.gameExe(forPicked: picked)
         if exe != picked {
             notice = "\(picked.lastPathComponent) only starts the game, so \(exe.lastPathComponent) from the same folder was added instead."
         }
-        if !games.contains(where: { $0.exe == exe }) {
-            var game = GameScanner.game(exe: exe, bottle: bottle)
-            game.isCustom = true
-            games.append(game)
-            games.sort(by: Self.order)
-            folderProfiles[game.id] = GameFolderProfile.load(for: game)
-            var updated = profiles
-            updated.custom.append(exe.path)
-            save(updated)
+        if games.contains(where: { $0.exe == exe }) { selection = exe; return }
+        let bottles = Bottle.all()
+        if let inside = bottles.first(where: { exe.path.hasPrefix($0.url.path + "/") }) {
+            add(exe, bottle: inside, linked: false)
+        } else if let found = Bottle.containing(exe) {
+            AddedBottleFolders.add(found)   // a bottle CrossOver keeps where the app doesn't look
+            add(exe, bottle: found, linked: false)
+        } else if bottles.count == 1 {
+            add(exe, bottle: bottles[0], linked: true)
+        } else {
+            pendingGame = PendingGame(exe: exe, bottles: bottles)
         }
+    }
+
+    /// Adds the pending game to run in `bottle`.
+    func addPendingGame(in bottle: Bottle) {
+        guard let pending = pendingGame else { return }
+        pendingGame = nil
+        add(pending.exe, bottle: bottle, linked: true)
+    }
+
+    /// Adds the pending game to run in the bottle at `folder` (one the app didn't know of).
+    func addPendingGame(bottleFolder folder: URL) {
+        guard let bottle = Bottle(folder: folder) else {
+            pendingGame = nil
+            error = "That folder isn't a CrossOver bottle (it has no cxbottle.conf). In CrossOver, right-click the bottle and choose Show in Finder to find it."
+            return
+        }
+        AddedBottleFolders.add(bottle)
+        addPendingGame(in: bottle)
+    }
+
+    private func add(_ exe: URL, bottle: Bottle, linked: Bool) {
+        var game = GameScanner.game(exe: exe, bottle: bottle)
+        game.isCustom = true
+        games.append(game)
+        games.sort(by: Self.order)
+        folderProfiles[game.id] = GameFolderProfile.load(for: game)
+        var updated = profiles
+        updated.custom.append(exe.path)
+        if linked { updated.customBottles[exe.path] = bottle.url.path }
+        save(updated)
         selection = exe
     }
 
@@ -227,7 +270,7 @@ final class AppModel {
         var updated = profiles
         if game.isCustom {
             guard !games.contains(where: { $0.exe == exe }) else { selection = exe; return }
-            updated.custom = updated.custom.map { $0 == game.exe.path ? exe.path : $0 }
+            updated.renameCustom(game.exe.path, to: exe.path)
             var new = GameScanner.game(exe: exe, bottle: game.bottle)
             new.isCustom = true
             games[i] = new
@@ -249,6 +292,7 @@ final class AppModel {
         games.removeAll { $0.exe == game.exe }
         var updated = profiles
         updated.custom.removeAll { $0 == game.exe.path }
+        updated.customBottles[game.exe.path] = nil
         updated.setProfile(nil, for: game)
         save(updated)
         GameFolderProfile.remove(for: game)

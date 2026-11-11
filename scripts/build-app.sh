@@ -38,7 +38,7 @@ BIN=$(swift build --package-path "$ROOT" -c release --product "$NAME" --show-bin
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/Hook"
 cp "$BIN/$NAME" "$APP/Contents/MacOS/$NAME"
-for f in lsfghook.dll lsfghook.so lsfghook.placeholder.dll liblsfgbridge.dylib liblssbridge.dylib dinput8.dll version.dll; do
+for f in lsfghook.dll lsfghook.so lsfghook.placeholder.dll liblsfgbridge.dylib liblssbridge.dylib dinput8.dll version.dll winmm.dll; do
     cp "$ROOT/hook/build/$f" "$APP/Contents/Resources/Hook/"
 done
 [ -d "$ROOT/hook/build/baked" ] && cp -R "$ROOT/hook/build/baked" "$APP/Contents/Resources/Hook/baked"

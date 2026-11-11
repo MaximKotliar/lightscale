@@ -4,6 +4,8 @@ import LSFGCore
 /// DLLs we can proxy from a game's folder to load the hook. Each forwards all calls to the real one.
 enum ProxyDLL: String, CaseIterable, Sendable {
     case dinput8, version
+    /// For games that load neither of the others (Unreal games often import only winmm of the usual three).
+    case winmm
 
     var fileName: String { "\(rawValue).dll" }
 }
@@ -190,7 +192,7 @@ enum GameScanner {
         }
     }
 
-    static let noProxyReason = "Doesn't load dinput8 or version.dll"
+    static let noProxyReason = "Doesn't load dinput8, version or winmm.dll"
 
     static func status(exe: URL) -> Game.Status {
         let folder = exe.deletingLastPathComponent()

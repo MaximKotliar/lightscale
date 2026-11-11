@@ -69,3 +69,13 @@ private func tail(_ url: URL?) -> String? { url.map { $0.path.components(separat
     #expect(decoded.exes == file.exes)
     #expect(try JSONDecoder().decode(ProfileFile.self, from: Data("{}".utf8)).exes.isEmpty)
 }
+
+@Test func winmmIsUsedOnlyWhenTheOthersAreMissing() throws {
+    let dir = try tempFolder()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let unreal = dir.appending(path: "REANIMAL.exe"), both = dir.appending(path: "Both.exe")
+    try writePE(unreal, imports: ["dxgi.dll", "WINMM.dll", "KERNEL32.dll"])
+    try writePE(both, imports: ["winmm.dll", "version.dll"])
+    #expect(GameScanner.status(exe: unreal) == .ready(.winmm))
+    #expect(GameScanner.status(exe: both) == .ready(.version))
+}

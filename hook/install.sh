@@ -45,7 +45,7 @@ while [ $# -gt 0 ]; do
     shift
 done
 [ -f "$bottle/cxbottle.conf" ] && [ -d "$game_dir" ] && [ -n "$exe" ] && [ -n "$proxy" ] || {
-    echo "usage: $0 [--uninstall] --bottle DIR --game-dir DIR --exe NAME.exe --proxy dinput8|version" >&2; exit 2; }
+    echo "usage: $0 [--uninstall] --bottle DIR --game-dir DIR --exe NAME.exe --proxy dinput8|version|winmm" >&2; exit 2; }
 
 conf="$bottle/cxbottle.conf"
 placeholder="$bottle/drive_c/windows/system32/lsfghook.dll"

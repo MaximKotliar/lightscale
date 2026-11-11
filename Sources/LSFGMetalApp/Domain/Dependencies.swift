@@ -62,7 +62,7 @@ enum DependencyChecker {
         // LIGHTSCALE_HIDE_LOSSLESS=1: act as if it isn't installed (to try the app the way users without it see it)
         let hideLossless = ProcessInfo.processInfo.environment["LIGHTSCALE_HIDE_LOSSLESS"] == "1"
         status.lossless = hideLossless ? nil
-            : LosslessLocator.findAll(roots: LosslessLocator.bottleRoots(crossOverApps: CrossOverInstall.candidateApps)).first
+            : LosslessLocator.findAll(roots: Bottle.roots).first
         let added = hideLossless ? nil : LosslessFile.installed
         status.losslessDLL = added ?? status.lossless?.dll
         let losslessDetail: String

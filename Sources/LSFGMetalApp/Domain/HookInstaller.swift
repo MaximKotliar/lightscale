@@ -22,7 +22,7 @@ enum NSSFiles {
 
 enum HookFiles {
     static let required = ["lsfghook.dll", "lsfghook.so", "lsfghook.placeholder.dll", "liblsfgbridge.dylib",
-                           "dinput8.dll", "version.dll"]
+                           "dinput8.dll", "version.dll", "winmm.dll"]
 
     /// Where the built hook files are: the app bundle, LSFG_HOOK_DIR, or hook/build in a checkout.
     static var source: URL? {

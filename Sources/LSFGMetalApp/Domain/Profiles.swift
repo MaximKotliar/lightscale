@@ -92,8 +92,19 @@ struct ProfileFile: Codable, Equatable, Sendable {
     var custom: [String] = []
     /// The exe the user chose with Game program, by the Steam game folder's path.
     var exes: [String: String] = [:]
+    /// The bottle that runs a game added by hand from outside any bottle, by the exe's path.
+    var customBottles: [String: String] = [:]
 
     init() {}
+
+    /// A game added by hand now runs as `new` (its bottle goes along).
+    mutating func renameCustom(_ old: String, to new: String) {
+        custom = custom.reduce(into: []) { list, path in
+            let path = path == old ? new : path
+            if !list.contains(path) { list.append(path) }
+        }
+        if let bottle = customBottles.removeValue(forKey: old) { customBottles[new] = bottle }
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -101,6 +112,7 @@ struct ProfileFile: Codable, Equatable, Sendable {
         games = try c.decodeIfPresent([String: GameProfile].self, forKey: .games) ?? [:]
         custom = try c.decodeIfPresent([String].self, forKey: .custom) ?? []
         exes = try c.decodeIfPresent([String: String].self, forKey: .exes) ?? [:]
+        customBottles = try c.decodeIfPresent([String: String].self, forKey: .customBottles) ?? [:]
     }
 
     static var url: URL { HookFiles.root.appending(path: "profiles.json") }

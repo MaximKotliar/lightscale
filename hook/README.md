@@ -10,7 +10,7 @@ First result: The Witcher 3 (DX12, D3DMetal, capped at 30 fps) on an M4 Max show
 
 1. **`lsfghook.dll`** is a tiny Windows DLL marked as a Wine builtin. It lives in `~/Library/Application Support/Lightscale/wine/x86_64-windows/`, which the bottle's `cxbottle.conf` adds to Wine's DLL search path (`[Wine] LibPath`). A placeholder copy in the bottle's `system32` makes Wine look it up there.
 2. When it loads, Wine loads its native side, **`lsfghook.so`** (x86_64 macOS code, run under Rosetta like `wineloader`), into the game process.
-3. **A proxy DLL in the game folder** triggers that: `dinput8.dll` or `version.dll`. It forwards every call to the real system DLL and also loads `lsfghook.dll`. A per-game registry override (`<proxy> = native,builtin`) makes Wine use it.
+3. **A proxy DLL in the game folder** triggers that: `dinput8.dll`, `version.dll` or `winmm.dll`. It forwards every call to the real system DLL and also loads `lsfghook.dll`. A per-game registry override (`<proxy> = native,builtin`) makes Wine use it.
 
 ## How frames are generated and shown
 
@@ -46,7 +46,7 @@ Bottles can live anywhere: CrossOver keeps them in `~/Library/Application Suppor
 settings (`BottlePath`) or `CX_BOTTLE_PATH` say otherwise, which is how CXPatcher builds use `~/CXPBottles`. The app
 looks in all of these.
 
-Pick the proxy from the game exe's imports (`llvm-objdump -p game.exe | grep 'DLL Name'`): `dinput8` or `version`. The installer refuses to overwrite a proxy DLL that isn't ours (another mod).
+Pick the proxy from the game exe's imports (`llvm-objdump -p game.exe | grep 'DLL Name'`): `dinput8`, `version` or `winmm` (in that order of preference). The installer refuses to overwrite a proxy DLL that isn't ours (another mod).
 
 `--uninstall` with the same arguments removes everything and restores `cxbottle.conf` byte for byte.
 

@@ -15,13 +15,13 @@ CFLAGS=(--target=x86_64-pc-windows-msvc -O2 -ffreestanding -fno-stack-protector 
 "$LLVM/clang" "${CFLAGS[@]}" -c pe/lsfghook.c -o "$OUT/obj/lsfghook.obj"
 "$LLVM/clang" "${CFLAGS[@]}" -c pe/lsfgtest.c -o "$OUT/obj/lsfgtest.obj"
 "$LLVM/clang" "${CFLAGS[@]}" -c pe/vertest.c -o "$OUT/obj/vertest.obj"
-for proxy in version dinput8; do
+for proxy in version dinput8 winmm; do
     python3 -I pe/gen_proxy.py $proxy "$OUT/obj/$proxy.c"
     "$LLVM/clang" "${CFLAGS[@]}" -Ipe -c "$OUT/obj/$proxy.c" -o "$OUT/obj/$proxy.obj"
 done
 "$LLD/lld-link" /nologo /dll /nodefaultlib /entry:DllMain /out:"$OUT/lsfghook.dll" \
     "$OUT/obj/lsfghook.obj" "$OUT/obj/kernel32.lib" "$OUT/obj/ntdll.lib"
-for proxy in version dinput8; do
+for proxy in version dinput8 winmm; do
     "$LLD/lld-link" /nologo /dll /nodefaultlib /entry:DllMain /out:"$OUT/$proxy.dll" \
         "$OUT/obj/$proxy.obj" "$OUT/obj/kernel32.lib"
 done

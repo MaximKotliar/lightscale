@@ -52,17 +52,56 @@ struct Bottle: Identifiable, Hashable, Sendable {
         }
     }
 
+    /// Folders that hold bottles: CrossOver's own (default, its BottlePath setting, CX_BOTTLE_PATH as CXPatcher
+    /// sets it), then ones found through Add Game (bottles kept elsewhere, like on an external drive).
+    static var roots: [URL] {
+        LosslessLocator.bottleRoots(crossOverApps: CrossOverInstall.candidateApps) + AddedBottleFolders.all
+    }
+
+    /// The bottle at `folder`, if it is one.
+    init?(folder: URL) {
+        guard FileManager.default.fileExists(atPath: folder.appending(path: "cxbottle.conf").path) else { return nil }
+        url = folder.resolvingSymlinksInPath()
+    }
+
+    init(url: URL) { self.url = url }
+
+    /// The bottle a file is inside, found by looking up its folders for a cxbottle.conf.
+    static func containing(_ file: URL) -> Bottle? {
+        var folder = file.deletingLastPathComponent()
+        while folder.path != "/" && !folder.path.isEmpty {
+            if let bottle = Bottle(folder: folder) { return bottle }
+            folder = folder.deletingLastPathComponent()
+        }
+        return nil
+    }
+
     static func all() -> [Bottle] {
         let fm = FileManager.default
         var seen = Set<String>()
-        // CrossOver's own bottle folders (default, its BottlePath setting, CX_BOTTLE_PATH as CXPatcher sets it)
-        return LosslessLocator.bottleRoots(crossOverApps: CrossOverInstall.candidateApps).flatMap { root in
+        return roots.flatMap { root in
             ((try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? [])
                 .filter { fm.fileExists(atPath: $0.appending(path: "cxbottle.conf").path) }
                 .map { Bottle(url: $0.resolvingSymlinksInPath()) }
         }
         .filter { seen.insert($0.url.path).inserted }
         .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+}
+
+/// Folders of bottles CrossOver keeps where the app doesn't look by itself, remembered once Add Game finds one.
+enum AddedBottleFolders {
+    private static let key = "bottleFolders"
+
+    static var all: [URL] { (UserDefaults.standard.stringArray(forKey: key) ?? []).map { URL(fileURLWithPath: $0) } }
+
+    /// Remembers the folder `bottle` is in (its sibling bottles are found too).
+    static func add(_ bottle: Bottle) {
+        let folder = bottle.url.deletingLastPathComponent().path
+        var list = UserDefaults.standard.stringArray(forKey: key) ?? []
+        guard !list.contains(folder) else { return }
+        list.append(folder)
+        UserDefaults.standard.set(list, forKey: key)
     }
 }
 

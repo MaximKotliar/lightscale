@@ -65,7 +65,7 @@ import Testing
     let confBefore = try String(contentsOf: bottle.conf, encoding: .utf8)
 
     var game = GameScanner.game(exe: exe, bottle: bottle)
-    #expect(game.status == .blocked("Doesn't load dinput8 or version.dll")) // vertest only imports kernel32
+    #expect(game.status == .blocked(GameScanner.noProxyReason)) // vertest only imports kernel32
     game.status = .ready(.version)                                            // force the path for the test
     try await HookInstaller.install(game, crossOver: crossOver)
     #expect(HookFiles.isOurProxy(gameDir.appending(path: "version.dll")))
