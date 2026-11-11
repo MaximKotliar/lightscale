@@ -149,8 +149,12 @@ enum HookInstaller {
         let baked = source.appending(path: "baked")
         if fm.fileExists(atPath: baked.path) { try replace(HookFiles.builtinDir.appending(path: "baked"), with: baked) }
         try setUpBottle(game.bottle, source: source)
+        // Lightscale's OptiScaler sitting under the proxy's name (FSR picked before the hook went in) moves aside.
+        let movesOptiScaler = OptiScaler.installedName(in: game) == proxy.fileName
+        if movesOptiScaler { try await OptiScaler.remove(game, crossOver: crossOver) }
         try replace(game.folder.appending(path: proxy.fileName), with: source.appending(path: proxy.fileName))
         try await crossOver.reg(["add", overrideKey(game), "/v", proxy.rawValue, "/d", "native,builtin", "/f"], in: game.bottle)
+        if movesOptiScaler { try await OptiScaler.install(game, crossOver: crossOver) }
         if let version = HookFiles.version(of: source) { try version.write(to: HookFiles.versionFile, atomically: true, encoding: .utf8) }
     }
 

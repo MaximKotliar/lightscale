@@ -214,8 +214,12 @@ enum GameScanner {
         }
         let candidates = ProxyDLL.allCases.filter { imports.contains($0.fileName) }
         guard !candidates.isEmpty else { return .blocked(noProxyReason) }
-        // Skip a proxy name another mod already uses in this folder.
-        guard let proxy = candidates.first(where: { !FileManager.default.fileExists(atPath: folder.appending(path: $0.fileName).path) }) else {
+        // Skip a proxy name another mod already uses in this folder. Lightscale's own OptiScaler under the name
+        // doesn't count: installing the hook moves it to another name.
+        let optiScaler = OptiScaler.installedName(inFolder: folder)
+        guard let proxy = candidates.first(where: {
+            $0.fileName == optiScaler || !FileManager.default.fileExists(atPath: folder.appending(path: $0.fileName).path)
+        }) else {
             return .blocked("Another mod uses \(candidates[0].fileName)")
         }
         return .ready(proxy)

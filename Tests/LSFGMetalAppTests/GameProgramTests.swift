@@ -110,3 +110,23 @@ private func tail(_ url: URL?) -> String? { url.map { $0.path.components(separat
         print(GameReport.text(for: real, crossOver: "27.0"))
     }
 }
+
+@Test func optiScalerLeavesTheHooksProxyFree() throws {
+    let dir = try tempFolder()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    // GTA V Enhanced: another mod's version.dll, so the hook needs winmm.dll
+    let exe = dir.appending(path: "GTA5_Enhanced.exe")
+    try writePE(exe, imports: ["version.dll", "winmm.dll", "wininet.dll", "kernel32.dll"])
+    try Data("other mod".utf8).write(to: dir.appending(path: "version.dll"))
+    let game = GameScanner.game(exe: exe, bottle: Bottle(url: dir))
+    #expect(game.status == .ready(.winmm))
+    #expect(OptiScaler.freeName(in: game) == "wininet.dll")
+
+    // Installed by an older version under winmm.dll: the hook can still go in (it moves OptiScaler aside)
+    try Data("optiscaler".utf8).write(to: dir.appending(path: "winmm.dll"))
+    try "; Lightscale: OptiScaler \(OptiScaler.version) as winmm.dll\n[Upscalers]\n"
+        .write(to: dir.appending(path: "OptiScaler.ini"), atomically: true, encoding: .utf8)
+    #expect(GameScanner.status(exe: exe) == .ready(.winmm))
+    try FileManager.default.removeItem(at: dir.appending(path: "OptiScaler.ini"))
+    #expect(GameScanner.status(exe: exe) == .blocked("Another mod uses version.dll"))
+}
