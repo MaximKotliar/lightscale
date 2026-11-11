@@ -201,6 +201,9 @@ final class AppModel {
 
     var pendingGame: PendingGame?
 
+    /// The game whose compatibility report is open.
+    var reportGame: Game?
+
     /// Adds a game the scan didn't find: any .exe. One inside a bottle runs there; for one elsewhere on the
     /// Mac (games kept outside bottles, like on an external drive) the only bottle is used, or the user picks.
     func addGame(exe picked: URL) {

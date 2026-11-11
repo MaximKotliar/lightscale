@@ -79,3 +79,34 @@ private func tail(_ url: URL?) -> String? { url.map { $0.path.components(separat
     #expect(GameScanner.status(exe: unreal) == .ready(.winmm))
     #expect(GameScanner.status(exe: both) == .ready(.version))
 }
+
+@Test func compatibilityReportNamesOnlyPathsInsideTheGame() throws {
+    let dir = try tempFolder()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let root = dir.appending(path: "Game"), bin = root.appending(path: "Binaries/Win64")
+    try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: root.appending(path: "Engine/Binaries"), withIntermediateDirectories: true)
+    let exe = bin.appending(path: "Game.exe")
+    try writePE(exe, imports: ["dxgi.dll", "helper.dll", "KERNEL32.dll", "api-ms-win-crt-heap-l1-1-0.dll"])
+    try writePE(bin.appending(path: "helper.dll"), imports: ["winmm.dll"])
+    try writePE(root.appending(path: "Launcher.exe"), imports: ["kernel32.dll"])
+    var game = GameScanner.game(exe: exe, bottle: Bottle(url: dir))
+    game = Game(name: "Game", bottle: game.bottle, exe: exe, status: game.status, isCustom: true, root: root)
+
+    let report = GameReport.text(for: game, crossOver: "27.0")
+    #expect(game.status == .ready(.winmm))                       // through helper.dll
+    #expect(report.contains("`Binaries/Win64/Game.exe`"))
+    #expect(report.contains("`dxgi.dll` (possible proxy)"))
+    #expect(report.contains("`helper.dll` (in the game's folder)"))
+    #expect(report.contains("`winmm.dll` **proxy the hook can use**"))
+    #expect(report.contains("Unreal Engine"))
+    #expect(report.contains("`Launcher.exe`"))
+    #expect(!report.contains("api-ms-win"))
+    #expect(!report.contains(dir.path))                          // no folders outside the game's
+    if let path = ProcessInfo.processInfo.environment["LIGHTSCALE_REPORT_EXE"], let rootPath = ProcessInfo.processInfo.environment["LIGHTSCALE_REPORT_ROOT"] {
+        let exe = URL(fileURLWithPath: path)
+        let real = Game(name: "Sample", bottle: Bottle(url: dir), exe: exe, status: GameScanner.status(exe: exe),
+                        root: URL(fileURLWithPath: rootPath))
+        print(GameReport.text(for: real, crossOver: "27.0"))
+    }
+}

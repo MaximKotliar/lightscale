@@ -14,6 +14,13 @@ struct GameDetailView: View {
                 if case let .blocked(reason) = game.status {
                     Label(blockedExplanation(reason), systemImage: "info.circle")
                         .foregroundStyle(.secondary)
+                    if reason == GameScanner.noProxyReason {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Support for a game like this can be added. Send a compatibility report: it lists the DLLs the game loads, which is what adding it takes.")
+                                .foregroundStyle(.secondary)
+                            Button("Get Compatibility Report…") { model.reportGame = game }
+                        }
+                    }
                 } else {
                     ProfileCard(game: game, model: model)
                     UpscalerCard(game: game, model: model)
@@ -281,6 +288,60 @@ private struct WhilePlayingCard: View {
                 Toggle("Cursor fix", isOn: binding(\.cursorFix)).labelsHidden()
             }
         }
+    }
+}
+
+/// A game's compatibility report, to send as a game-support request on GitHub.
+struct CompatibilityReportSheet: View {
+    let game: Game
+    let model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var report: String?
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Compatibility Report").font(.title3.weight(.semibold))
+            Text("To ask for \(game.name) to be supported, open a game-support issue on GitHub and paste this report into it. It names no folders outside the game's own.")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Group {
+                if let report {
+                    ScrollView {
+                        Text(report).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(10)
+                    }
+                } else {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            .frame(height: 320)
+            .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            HStack {
+                Button(copied ? "Copied" : "Copy") { copy() }.disabled(report == nil)
+                Spacer()
+                Button("Close") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Copy and Open Issue") {
+                    copy()
+                    NSWorkspace.shared.open(GameReport.newIssue(for: game))
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(report == nil)
+            }
+        }
+        .padding(20)
+        .frame(width: 560)
+        .task {
+            let game = game, crossOver = model.status.crossOver?.version
+            report = await Task.detached(priority: .userInitiated) { GameReport.text(for: game, crossOver: crossOver) }.value
+        }
+    }
+
+    private func copy() {
+        guard let report else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(report, forType: .string)
+        copied = true
     }
 }
 

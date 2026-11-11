@@ -16,6 +16,7 @@ struct GameListView: View {
                                 .disabled(game.isInstalled)
                         }
                         Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([game.exe]) }
+                        Button("Get Compatibility Report…") { model.reportGame = game }
                     }
             }
         }
