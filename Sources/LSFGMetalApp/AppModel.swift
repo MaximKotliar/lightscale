@@ -74,6 +74,20 @@ final class AppModel {
             }
         games = (scanned + custom).sorted(by: Self.order)
         exeChoices = [:]
+        // Lightscale's OptiScaler under a name the game doesn't load (0.14 and earlier) never ran: move it to one it
+        // does. The misplaced copy was never loaded, so this is safe even while the game runs.
+        if let crossOver = status.crossOver {
+            for game in games {
+                guard let current = OptiScaler.installedName(in: game) else { continue }
+                let name = OptiScaler.freeName(in: game)
+                guard current != name else { continue }
+                do {
+                    // no name the game loads is free: take it out rather than leave a copy that never runs
+                    if name == nil { try await OptiScaler.remove(game, crossOver: crossOver) }
+                    else { try await OptiScaler.install(game, crossOver: crossOver) }
+                } catch { self.error = error.localizedDescription }
+            }
+        }
         fsrPathGames = Set(games.filter { OptiScaler.installedName(in: $0) != nil }.map(\.exe))
         folderProfiles = Dictionary(uniqueKeysWithValues: games.compactMap { game in
             GameFolderProfile.load(for: game).map { (game.id, $0) }

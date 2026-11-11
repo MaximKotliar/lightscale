@@ -194,24 +194,28 @@ enum GameScanner {
 
     static let noProxyReason = "Doesn't load dinput8, version or winmm.dll"
 
+    /// The DLLs an exe loads: its own imports, plus those of DLLs it loads from its folder (e.g. UnityPlayer.dll).
+    /// Our proxies and OptiScaler in the folder are skipped, so what's installed there doesn't change the answer.
+    static func imports(of exe: URL) -> (is64Bit: Bool, imports: Set<String>)? {
+        let folder = exe.deletingLastPathComponent()
+        guard let data = try? Data(contentsOf: exe, options: .mappedIfSafe), let info = try? PEFile.info(of: data) else { return nil }
+        let skipped = Set(ProxyDLL.allCases.map(\.fileName) + OptiScaler.names)
+        var imports = Set(info.imports)
+        for dll in info.imports where !skipped.contains(dll) {
+            guard let data = try? Data(contentsOf: folder.appending(path: dll), options: .mappedIfSafe),
+                  let localInfo = try? PEFile.info(of: data) else { continue }
+            imports.formUnion(localInfo.imports)
+        }
+        return (info.is64Bit, imports)
+    }
+
     static func status(exe: URL) -> Game.Status {
         let folder = exe.deletingLastPathComponent()
         if let proxy = ProxyDLL.allCases.first(where: { HookFiles.isOurProxy(folder.appending(path: $0.fileName)) }) {
             return .installed(proxy)
         }
-        guard let data = try? Data(contentsOf: exe, options: .mappedIfSafe), let info = try? PEFile.info(of: data) else {
-            return .blocked("Not a Windows program")
-        }
-        guard info.is64Bit else { return .blocked("32-bit game") }
-        // The exe's own imports, plus those of DLLs it loads from its folder (e.g. UnityPlayer.dll).
-        var imports = Set(info.imports)
-        for dll in info.imports {
-            let local = folder.appending(path: dll)
-            guard !ProxyDLL.allCases.map(\.fileName).contains(dll),
-                  let data = try? Data(contentsOf: local, options: .mappedIfSafe),
-                  let localInfo = try? PEFile.info(of: data) else { continue }
-            imports.formUnion(localInfo.imports)
-        }
+        guard let (is64Bit, imports) = imports(of: exe) else { return .blocked("Not a Windows program") }
+        guard is64Bit else { return .blocked("32-bit game") }
         let candidates = ProxyDLL.allCases.filter { imports.contains($0.fileName) }
         guard !candidates.isEmpty else { return .blocked(noProxyReason) }
         // Skip a proxy name another mod already uses in this folder. Lightscale's own OptiScaler under the name

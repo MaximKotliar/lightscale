@@ -12,7 +12,7 @@ enum OptiScaler {
     static let project = URL(string: "https://github.com/optiscaler/OptiScaler")!
 
     /// Names OptiScaler loads under, in the order we try them: D3DMetal provides dxgi.dll and d3d12.dll, so those are
-    /// out, and the name the hook uses (or will use) in the game is skipped.
+    /// out. In a game it takes one the game loads (Windows wouldn't load it otherwise) that the hook doesn't use.
     static let names = ["winmm.dll", "wininet.dll", "winhttp.dll", "dbghelp.dll"]
 
     static var cache: URL { HookFiles.root.appending(path: "optiscaler/\(version)") }
@@ -31,7 +31,7 @@ enum OptiScaler {
             case let .download(why): "Couldn't download OptiScaler: \(why)"
             case .verify: "The OptiScaler download didn't match the expected file, so it wasn't used."
             case let .unpack(why): "Couldn't unpack OptiScaler: \(why)"
-            case .noFreeName: "The game's folder already has a DLL under each name OptiScaler can use (\(names.joined(separator: ", ")))."
+            case .noFreeName: "The game doesn't load a DLL OptiScaler can stand in for (\(names.joined(separator: ", "))), or another mod already uses it."
             }
         }
     }
@@ -47,21 +47,30 @@ enum OptiScaler {
         return name
     }
 
-    /// The first name OptiScaler can take in the game: free, and not the hook's proxy (winmm.dll is both).
+    /// The first name OptiScaler can take in the game: one the game loads, free (or OptiScaler's own already), and
+    /// not the hook's proxy (winmm.dll can be both).
     static func freeName(in game: Game) -> String? {
         let hook: String? = switch GameScanner.status(exe: game.exe) {
         case let .installed(proxy), let .ready(proxy): proxy.fileName
         case .blocked: nil
         }
-        return names.first { $0 != hook && !FileManager.default.fileExists(atPath: game.folder.appending(path: $0).path) }
+        let loaded = GameScanner.imports(of: game.exe)?.imports ?? []
+        let ours = installedName(in: game)
+        return names.first {
+            $0 != hook && loaded.contains($0) && ($0 == ours || !FileManager.default.fileExists(atPath: game.folder.appending(path: $0).path))
+        }
     }
 
     /// Puts OptiScaler next to the game's exe with DLSS as its output, and the DLL override that makes Wine load it.
     static func install(_ game: Game, crossOver: CrossOverInstall) async throws {
-        guard installedName(in: game) == nil else { return }
+        guard let name = freeName(in: game) else { throw Failure.noFreeName }
+        if let current = installedName(in: game) {
+            guard current != name else { return }
+            // under a name the game doesn't load (Lightscale 0.14 and earlier), so it never ran: move it
+            try await remove(game, crossOver: crossOver)
+        }
         try await ensureDownloaded()
         let fm = FileManager.default
-        guard let name = freeName(in: game) else { throw Failure.noFreeName }
         let ini = try String(contentsOf: cache.appending(path: "OptiScaler.ini"), encoding: .utf8)
             .replacingOccurrences(of: "\nDx12Upscaler=auto", with: "\nDx12Upscaler=dlss")
         try fm.copyItem(at: cache.appending(path: "OptiScaler.dll"), to: game.folder.appending(path: name))

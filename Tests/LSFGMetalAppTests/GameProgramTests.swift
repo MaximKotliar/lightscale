@@ -130,3 +130,24 @@ private func tail(_ url: URL?) -> String? { url.map { $0.path.components(separat
     try FileManager.default.removeItem(at: dir.appending(path: "OptiScaler.ini"))
     #expect(GameScanner.status(exe: exe) == .blocked("Another mod uses version.dll"))
 }
+
+@Test func optiScalerTakesOnlyANameTheGameLoads() throws {
+    let dir = try tempFolder()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    // REANIMAL: loads winmm (the hook's), winhttp and dbghelp, not wininet
+    let exe = dir.appending(path: "REANIMAL.exe")
+    try writePE(exe, imports: ["WINMM.dll", "WINHTTP.dll", "dbghelp.dll", "KERNEL32.dll"])
+    let game = GameScanner.game(exe: exe, bottle: Bottle(url: dir))
+    #expect(OptiScaler.freeName(in: game) == "winhttp.dll")
+
+    // an older copy under wininet.dll isn't where it should be
+    try Data("optiscaler".utf8).write(to: dir.appending(path: "wininet.dll"))
+    try "; Lightscale: OptiScaler \(OptiScaler.version) as wininet.dll\n"
+        .write(to: dir.appending(path: "OptiScaler.ini"), atomically: true, encoding: .utf8)
+    #expect(OptiScaler.installedName(in: game) == "wininet.dll")
+    #expect(OptiScaler.freeName(in: game) == "winhttp.dll")
+
+    let none = dir.appending(path: "Plain.exe")
+    try writePE(none, imports: ["winmm.dll", "kernel32.dll"])
+    #expect(OptiScaler.freeName(in: GameScanner.game(exe: none, bottle: Bottle(url: dir))) == nil)
+}
