@@ -13,7 +13,7 @@ struct AppRelease: Sendable, Equatable {
 /// Updates the app from GitHub Releases: the latest release's `Lightscale-<version>.zip` and its Ed25519 signature
 /// (`.zip.sig`, made by scripts/release.sh with the private key that stays on the release Mac). The download is
 /// verified before anything is unpacked; then a small script waits for the app to quit, swaps the bundle and
-/// reopens it. The app isn't signed with a Developer ID, so the signature is what keeps a tampered download out.
+/// reopens it. The signature keeps a tampered download out, whether or not the build is signed with a Developer ID.
 /// Files the app downloads itself carry no quarantine flag, so the new version opens without a Gatekeeper prompt.
 enum Updater {
     static let feed = URL(string: ProcessInfo.processInfo.environment["LIGHTSCALE_UPDATE_FEED"]

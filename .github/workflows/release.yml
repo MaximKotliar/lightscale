@@ -59,6 +59,33 @@ jobs:
           printf '%s' "$KEY" > "$RUNNER_TEMP/update-signing-key"
           echo "LIGHTSCALE_SIGNING_KEY=$RUNNER_TEMP/update-signing-key" >> "$GITHUB_ENV"
 
+      # Developer ID signing and notarization. Secrets: DEVELOPER_ID_P12 (the "Developer ID Application" certificate
+      # with its private key, exported from Keychain Access as .p12, base64), DEVELOPER_ID_P12_PASSWORD, and
+      # NOTARIZATION_KEY (an app-specific password); variables: APPLE_ID, APPLE_TEAM_ID. A release needs all of
+      # them; a dry run without them builds ad-hoc signed.
+      - name: Developer ID certificate
+        env:
+          P12: ${{ secrets.DEVELOPER_ID_P12 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          if [ -z "$P12" ]; then
+            [ "$PUBLISH" = 1 ] && { echo "::error::secret DEVELOPER_ID_P12 is missing"; exit 1; }
+            echo "::warning::no Developer ID certificate: ad-hoc signed, not notarized"; exit 0
+          fi
+          KC="$RUNNER_TEMP/signing.keychain-db" KCPASS=$(uuidgen)
+          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KCPASS" "$KC"
+          security set-keychain-settings -lut 3600 "$KC"
+          security unlock-keychain -p "$KCPASS" "$KC"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KCPASS" "$KC" >/dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          ID=$(security find-identity -v -p codesigning "$KC" | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -1)
+          [ -n "$ID" ] || { echo "::error::no Developer ID Application identity in DEVELOPER_ID_P12"; exit 1; }
+          echo "SIGN_IDENTITY=$ID" >> "$GITHUB_ENV"
+          echo "KC=$KC" >> "$GITHUB_ENV"
+
       - name: Previous release (baked kernels and GPTK)
         run: |
           PREV=$(gh release list --exclude-drafts --exclude-pre-releases --limit 30 --json tagName -q '.[].tagName' \
@@ -81,6 +108,14 @@ jobs:
 
       - name: Test
         run: swift test
+
+      - name: Notarize
+        if: env.SIGN_IDENTITY != ''
+        env:
+          APPLE_ID: ${{ vars.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.NOTARIZATION_KEY }}
+        run: scripts/notarize.sh build/Lightscale.app
 
       - name: Zip and sign
         run: |
@@ -112,6 +147,8 @@ jobs:
             ${{ env.ZIP }}.sig
           retention-days: 7
 
-      - name: Remove the key
+      - name: Remove the keys
         if: always()
-        run: rm -f "$RUNNER_TEMP/update-signing-key"
+        run: |
+          rm -f "$RUNNER_TEMP/update-signing-key" "$RUNNER_TEMP/cert.p12"
+          [ -n "${KC:-}" ] && security delete-keychain "$KC" || true

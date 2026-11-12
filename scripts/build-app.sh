@@ -109,6 +109,21 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 # Hardened runtime, no extra entitlements. Not sandboxed: the app edits CrossOver bottles and
 # runs CrossOver's wine, spirv-cross and Apple's metal compiler.
-codesign -s - -f --options runtime "$APP/Contents/Resources/Hook/lsfghook.so" "$APP/Contents/Resources/Hook/liblsfgbridge.dylib" "$APP/Contents/Resources/Hook/liblssbridge.dylib" 2>/dev/null
-codesign -s - -f --options runtime "$APP" 2>/dev/null
+# SIGN_IDENTITY="Developer ID Application: …" signs for notarization (scripts/notarize.sh): every Mach-O inside,
+# GPTK's Apple-signed ones too (they have no hardened runtime or timestamp), innermost first, then the frameworks
+# and the app. Without it, an ad-hoc signature.
+IDENTITY=${SIGN_IDENTITY:--}
+SIGN=(codesign -f -s "$IDENTITY" --options runtime)
+[ "$IDENTITY" != - ] && SIGN+=(--timestamp)
+# Ad-hoc: only the hook's own files, GPTK keeps Apple's signature.
+INSIDE="$APP/Contents/Resources"; [ "$IDENTITY" = - ] && INSIDE="$APP/Contents/Resources/Hook"
+find "$INSIDE" -type f -print0 | xargs -0 file | grep Mach-O | cut -d: -f1 \
+    | awk '{ print gsub("/", "/"), $0 }' | sort -rn | cut -d' ' -f2- | while IFS= read -r f; do
+    "${SIGN[@]}" "$f" >/dev/null 2>&1 || { echo "can't sign $f" >&2; exit 1; }
+done
+find "$INSIDE" -name "*.framework" -type d -prune | while IFS= read -r f; do
+    "${SIGN[@]}" "$f" >/dev/null 2>&1 || { echo "can't sign $f" >&2; exit 1; }
+done
+"${SIGN[@]}" "$APP" >/dev/null 2>&1 || { echo "can't sign $APP" >&2; exit 1; }
+[ "$IDENTITY" != - ] && echo "signed: $IDENTITY"
 echo "$APP"
