@@ -73,7 +73,10 @@ enum DependencyChecker {
                             state: status.losslessDLL == nil ? .optional : .ok,
                             fix: added != nil ? .removeLossless : status.lossless == nil ? .addLossless(store: LosslessScaling.store) : nil))
 
-        if let dll = status.losslessDLL { checks += kernelChecks(dll: dll) }
+        if let dll = status.losslessDLL {
+            let build = added != nil ? "your copy added from disk" : "Steam build \(status.lossless?.buildID ?? "?")"
+            checks += kernelChecks(dll: dll, build: build)
+        }
 
         let hook = HookFiles.source
         checks.append(Check(id: "hook", title: "Game hook", detail: hook == nil ? "Missing from the app; rebuild it" : "Included",
@@ -85,14 +88,16 @@ enum DependencyChecker {
     /// The app ships every kernel pre-built, without Lossless Scaling's numbers (read from the user's copy when a
     /// game loads them); nothing is built on this Mac. They fit the Lossless Scaling versions they were built from;
     /// a Lossless Scaling update that changes a shader needs a Lightscale update.
-    private static func kernelChecks(dll: URL) -> [Check] {
+    /// `build` names the user's copy in the message, so they can report which version isn't supported.
+    private static func kernelChecks(dll: URL, build: String) -> [Check] {
         let baked = HookFiles.source?.appending(path: "baked")
         let fm = FileManager.default
         func fits(_ manifest: String, _ mismatches: (URL) throws -> [UInt32]) -> Bool {
             guard let baked, fm.fileExists(atPath: baked.appending(path: manifest).path) else { return false }
             return (try? mismatches(baked))?.isEmpty == true
         }
-        let update = "Your Lossless Scaling version is newer than this version of \(AppName.display) supports. Update \(AppName.display) to use it."
+        // Not "newer": an older copy, a Steam beta branch or another store's build doesn't fit either.
+        let update = "\(AppName.display) doesn't support your Lossless Scaling version yet (\(build)). Check for updates, or open an issue saying which version you have."
         let frameGeneration = fits(LSFGKernels.manifestName) { try LSFGKernels.bakedMismatches(bakedDirectory: $0, dll: dll, ids: kernelIDs) }
         let scaling = fits(LSFGKernels.dxbcManifestName) { try LSFGKernels.dxbcBakedMismatches(bakedDirectory: $0, dll: dll) }
         return [
