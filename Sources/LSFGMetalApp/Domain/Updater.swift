@@ -112,7 +112,7 @@ enum Updater {
         guard let info = NSDictionary(contentsOf: newApp.appending(path: "Contents/Info.plist")) else {
             throw Failure.badArchive("no \(appURL.lastPathComponent) inside")
         }
-        guard info["CFBundleIdentifier"] as? String == Bundle.main.bundleIdentifier else { throw Failure.badArchive("another app") }
+        guard let id = info["CFBundleIdentifier"] as? String, AppName.bundleIDs.contains(id) else { throw Failure.badArchive("another app") }
         guard info["CFBundleShortVersionString"] as? String == release.version else { throw Failure.badArchive("not version \(release.version)") }
         guard try await run("/usr/bin/codesign", ["--verify", "--deep", newApp.path]) else { throw Failure.badArchive("its code signature is broken") }
         return newApp

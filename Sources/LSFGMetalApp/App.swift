@@ -9,6 +9,7 @@ struct LSFGMetalApp: App {
         // Started from Terminal (swift run) the process isn't a bundled app yet: make it a regular one.
         NSApplication.shared.setActivationPolicy(.regular)
         HookFiles.migrateLegacyFolder()   // before anything reads profiles.json
+        AppName.migrateSettings()         // settings saved under an earlier bundle ID
         let model = AppModel()
         // `--onboarding` shows first-launch setup again (handy for screenshots and docs).
         if CommandLine.arguments.contains("--onboarding") { model.hasCompletedSetup = false }

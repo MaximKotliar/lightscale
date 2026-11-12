@@ -6,6 +6,20 @@ enum AppName {
     static let display = "Lightscale"
     /// ~/Library/Application Support/<folder>, ~/Library/Logs/<folder>.log
     static let folder = "Lightscale"
-    /// Bundle ID before the rename, for settings saved by the old app
-    static let legacyBundleID = "dev.lsfg-metal.setup"
+    /// Every bundle ID this app has had, newest first. The updater accepts a release under any of them, so a
+    /// copy with an older ID updates to one with the newest (scripts/build-app.sh sets the one a build gets).
+    static let bundleIDs = ["com.maksystems.lightscale", "dev.lightscale.app", "dev.lsfg-metal.setup"]
+    /// Settings the app keeps in UserDefaults, which macOS stores per bundle ID.
+    static let settingKeys = ["setupComplete", "bottleFolders"]
+
+    /// Copies settings saved under the app's earlier bundle IDs into this one's, where it has none of its own.
+    static func migrateSettings(to defaults: UserDefaults = .standard, current: String? = Bundle.main.bundleIdentifier,
+                                from ids: [String] = bundleIDs) {
+        for id in ids where id != current {
+            guard let old = UserDefaults(suiteName: id) else { continue }
+            for key in settingKeys where defaults.object(forKey: key) == nil {
+                if let value = old.object(forKey: key) { defaults.set(value, forKey: key) }
+            }
+        }
+    }
 }

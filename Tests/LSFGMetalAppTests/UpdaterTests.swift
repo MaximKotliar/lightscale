@@ -29,3 +29,21 @@ import Testing
     #expect(!Updater.isValid(signature: Data(count: 64), for: data))
     #expect(Data(base64Encoded: Updater.publicKey)?.count == 32)
 }
+
+@Test func settingsMoveFromEarlierBundleIDs() throws {
+    let ids = (0..<3).map { _ in "test.lightscale.\(UUID().uuidString)" }   // newest first, like AppName.bundleIDs
+    defer { ids.forEach { UserDefaults.standard.removePersistentDomain(forName: $0) } }
+    let current = try #require(UserDefaults(suiteName: ids[0]))
+    let previous = try #require(UserDefaults(suiteName: ids[1]))
+    let oldest = try #require(UserDefaults(suiteName: ids[2]))
+    previous.set(["/Volumes/Games/Bottles"], forKey: "bottleFolders")
+    oldest.set(true, forKey: "setupComplete")
+    oldest.set(["/old"], forKey: "bottleFolders")
+
+    AppName.migrateSettings(to: current, current: ids[0], from: ids)
+    #expect(current.bool(forKey: "setupComplete"))
+    #expect(current.stringArray(forKey: "bottleFolders") == ["/Volumes/Games/Bottles"])   // the newer ID wins
+    current.set(false, forKey: "setupComplete")
+    AppName.migrateSettings(to: current, current: ids[0], from: ids)
+    #expect(!current.bool(forKey: "setupComplete"))                                       // its own settings stay
+}

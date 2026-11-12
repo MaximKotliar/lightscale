@@ -40,7 +40,7 @@ final class PlaySession {
     @ObservationIgnored private var goneSince: Date?
     @ObservationIgnored private var lastGameModeOn = Date.distantPast
     @ObservationIgnored private var commands: Task<Void, Never>?
-    private static let log = Logger(subsystem: "dev.lightscale.app", category: "play")
+    private static let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? AppName.bundleIDs[0], category: "play")
 
     /// Called once a second with what the running game wants (nil: none runs). A game that seems gone for a moment
     /// (the log between writes, the game list reloading) still counts for 5 seconds, so nothing flickers off.
