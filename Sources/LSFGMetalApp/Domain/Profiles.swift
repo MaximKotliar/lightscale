@@ -28,6 +28,9 @@ struct GameProfile: Codable, Equatable, Sendable {
     var hud = false
     /// The HUD's size: 1 is the Metal HUD's.
     var hudScale = 1.0
+    /// The game's frame rate limit, set by the hook after each frame the game presents: 0 off, -1 auto (the display's
+    /// refresh rate divided by the frames frame generation shows per real frame), otherwise frames per second.
+    var fpsCap = 0
     /// While the game runs: macOS Game Mode on (the app does it; the hook ignores it).
     var gameMode = true
     /// While the game is in front: re-hide the cursor when the hidden one drifts into the Dock, menu bar or a hot
@@ -69,6 +72,7 @@ struct GameProfile: Codable, Equatable, Sendable {
         scalerPerformance = try c.decodeIfPresent(Bool.self, forKey: .scalerPerformance) ?? d.scalerPerformance
         hud = try c.decodeIfPresent(Bool.self, forKey: .hud) ?? d.hud
         hudScale = try c.decodeIfPresent(Double.self, forKey: .hudScale) ?? d.hudScale
+        fpsCap = try c.decodeIfPresent(Int.self, forKey: .fpsCap) ?? d.fpsCap
         gameMode = try c.decodeIfPresent(Bool.self, forKey: .gameMode) ?? d.gameMode
         cursorFix = try c.decodeIfPresent(Bool.self, forKey: .cursorFix) ?? d.cursorFix
     }

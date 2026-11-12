@@ -80,6 +80,17 @@ private struct ProfileCard: View {
     let game: Game
     let model: AppModel
 
+    static let caps = [30, 40, 45, 60, 90, 120]
+
+    static func capCaption(_ p: GameProfile) -> String {
+        switch p.fpsCap {
+        case 0: "The game runs as fast as it can. A steady limit makes generated frames smoother."
+        case -1: p.enabled ? "Your display's refresh rate divided by \(p.multiplier), so every real frame gets its generated ones."
+                           : "Your display's refresh rate."
+        default: "Also saves power: the game does less work between frames."
+        }
+    }
+
     private var profile: Binding<GameProfile> {
         Binding(get: { model.profile(for: game) }, set: { model.setProfile($0, for: game) })
     }
@@ -104,6 +115,16 @@ private struct ProfileCard: View {
                 SliderRow(title: "Pacing buffer", value: profile.bufferMs, range: 0...20, step: 1) { "\(Int($0)) ms" }
             }
             .disabled(!profile.wrappedValue.enabled)
+            SettingRow(title: "Frame rate limit", caption: Self.capCaption(profile.wrappedValue)) {
+                Picker("Frame rate limit", selection: profile.fpsCap) {
+                    Text("Off").tag(0)
+                    Text("Auto").tag(-1)
+                    Divider()
+                    ForEach(Self.caps, id: \.self) { Text("\($0) fps").tag($0) }
+                }
+                .labelsHidden()
+                .fixedSize()
+            }
             HStack {
                 Text(game.isInstalled ? "Changes apply right away, even while the game is running." : "Install to use these settings.")
                     .font(.caption).foregroundStyle(.secondary)

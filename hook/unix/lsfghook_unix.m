@@ -31,6 +31,7 @@
 #import <QuartzCore/QuartzCore.h>
 #import <dlfcn.h>
 #import <mach/mach.h>
+#import <mach/mach_time.h>
 #import <sys/stat.h>
 #import <objc/runtime.h>
 #import <os/lock.h>
@@ -284,8 +285,10 @@ static void trackPresented(id<CAMetalDrawable> d) {
 // need no Lossless Scaling);
 // the overlay then shows the game's frames scaled to the window. scalerSharpness 0-1, scalerPerformance: LS1's
 // single-pass variant. hudScale: the HUD's size, 1 = Metal HUD-like.
+// fpsCap: the game's frame rate limit (frameCapWait): 0 off, -1 auto (the display's refresh rate divided by the frames
+// shown per real frame), otherwise frames per second.
 static struct { BOOL enabled, performance; int multiplier; float flowScale, bufferMs; int upscaler, nssQuality;
-                int scaler; float scalerSharpness; BOOL scalerPerformance; BOOL hud; float hudScale; } config = { YES, YES, 2, 1.0f, 8.0f, 0, 1, 0, 0.5f, NO, NO, 1.0f };
+                int scaler; float scalerSharpness; BOOL scalerPerformance; BOOL hud; float hudScale; int fpsCap; } config = { YES, YES, 2, 1.0f, 8.0f, 0, 1, 0, 0.5f, NO, NO, 1.0f, 0 };
 static int scalerMode(NSString *s) {
     NSArray *names = @[@"off", @"ls1", @"fsr", @"bcas", @"bicubic", @"nearest", @"nis"];
     NSUInteger i = [names indexOfObject:s.lowercaseString];
@@ -312,6 +315,7 @@ static void applyProfile(NSDictionary *p) {
     if ([p[@"scalerPerformance"] isKindOfClass:NSNumber.class]) config.scalerPerformance = [p[@"scalerPerformance"] boolValue];
     if ([p[@"hud"] isKindOfClass:NSNumber.class]) config.hud = [p[@"hud"] boolValue];
     if ([p[@"hudScale"] isKindOfClass:NSNumber.class]) config.hudScale = [p[@"hudScale"] floatValue];
+    if ([p[@"fpsCap"] isKindOfClass:NSNumber.class]) config.fpsCap = [p[@"fpsCap"] intValue];
 }
 
 // The running .exe as a Unix path, sent by the PE side when it loads (nil until then).
@@ -336,6 +340,7 @@ static void loadConfig(void) {
     config.enabled = YES; config.performance = YES; config.multiplier = 2;
     config.flowScale = 1.0f; config.bufferMs = 8.0f; config.upscaler = 0; config.nssQuality = 1;
     config.scaler = 0; config.scalerSharpness = 0.5f; config.scalerPerformance = NO; config.hud = NO; config.hudScale = 1.0f;
+    config.fpsCap = 0;
     NSData *data = [NSData dataWithContentsOfFile:profilesPath()];
     NSDictionary *root = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
     NSString *exe = (exePath.lastPathComponent ?: NSProcessInfo.processInfo.processName).lowercaseString;
@@ -353,7 +358,7 @@ static void loadConfig(void) {
     static dispatch_once_t warned;
     dispatch_once(&warned, ^{
         NSMutableArray *set = [NSMutableArray array];
-        for (NSString *name in @[@"LSFG_FG", @"LSFG_PERFORMANCE", @"LSFG_FLOW_SCALE", @"LSFG_BUFFER_MS", @"LSFG_MULTIPLIER", @"LSFG_UPSCALER", @"LSFG_NSS_QUALITY", @"LSFG_SCALER", @"LSFG_SCALER_SHARPNESS", @"LSFG_HUD", @"LSFG_HUD_SCALE"])
+        for (NSString *name in @[@"LSFG_FG", @"LSFG_PERFORMANCE", @"LSFG_FLOW_SCALE", @"LSFG_BUFFER_MS", @"LSFG_MULTIPLIER", @"LSFG_UPSCALER", @"LSFG_NSS_QUALITY", @"LSFG_SCALER", @"LSFG_SCALER_SHARPNESS", @"LSFG_HUD", @"LSFG_HUD_SCALE", @"LSFG_FPS_CAP"])
             if (getenv(name.UTF8String)) [set addObject:name];
         if (set.count) lsfg_log(@"environment overrides the profile (the app can't change these): %@", [set componentsJoinedByString:@", "]);
     });
@@ -369,6 +374,8 @@ static void loadConfig(void) {
     if ((v = getenv("LSFG_SCALER_SHARPNESS"))) config.scalerSharpness = (float)atof(v);
     if ((v = getenv("LSFG_HUD"))) config.hud = v[0] != '0';
     if ((v = getenv("LSFG_HUD_SCALE"))) config.hudScale = (float)atof(v);
+    if ((v = getenv("LSFG_FPS_CAP"))) config.fpsCap = strcmp(v, "auto") == 0 ? -1 : atoi(v);
+    config.fpsCap = config.fpsCap < 0 ? -1 : config.fpsCap == 0 ? 0 : MAX(10, MIN(config.fpsCap, 500));
     config.hudScale = isfinite(config.hudScale) ? fminf(fmaxf(config.hudScale, 0.5f), 3.0f) : 1.0f;
     config.scalerSharpness = fminf(fmaxf(config.scalerSharpness, 0.0f), 1.0f);
     config.multiplier = MAX(2, MIN(config.multiplier, kMaxGenerated + 1));
@@ -380,6 +387,7 @@ static void loadConfig(void) {
     static const char *scalerNames[] = {"off", "LS1", "FSR", "BCAS", "bicubic", "nearest", "NIS"};
     lsfg_log(@"profile for %@: scaling %s, sharpness %.2f%s", exe, scalerNames[MAX(0, MIN(config.scaler, 6))], config.scalerSharpness,
              config.scaler == 1 && config.scalerPerformance ? ", performance" : "");
+    lsfg_log(@"profile for %@: frame cap %@", exe, config.fpsCap < 0 ? @"auto" : config.fpsCap == 0 ? @"off" : [NSString stringWithFormat:@"%d fps", config.fpsCap]);
 }
 
 static void fgRebuild(void);
@@ -752,6 +760,17 @@ static void releaseFrameLocked(QueuedFrame f) {
 
 // The display's real refresh interval: Low Power Mode caps ProMotion displays at 60 Hz while still
 // reporting (and ticking the display link at) 120.
+// The display's nominal refresh rate (read on the main thread, AppKit isn't thread-safe), in seconds per refresh.
+static _Atomic double screenRefresh;
+static void readScreenRefresh(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSScreen *screen = NSScreen.mainScreen;   // the screen with the game's window, most likely
+        double hz = screen.maximumFramesPerSecond;
+        if (hz <= 0) for (NSScreen *s in NSScreen.screens) hz = MAX(hz, (double)s.maximumFramesPerSecond);
+        if (hz > 0) atomic_store(&screenRefresh, 1.0 / hz);
+    });
+}
+
 static double effectiveRefresh(void) {
     return MAX(atomic_load(&linkInterval), NSProcessInfo.processInfo.lowPowerModeEnabled ? 1.0 / 60 : 0);
 }
@@ -1676,6 +1695,7 @@ static void startStatsTimer(void) {
             publishHUD(c, hudShown, hudMean, hudSd, hudMax, hudDropped, fn ? fu / 1000.0 / fn : 0, ln ? lu / 1000.0 / ln : 0,
                        qn ? qu / 1000.0 / qn : 0, busy);
         reloadConfigIfChanged();
+        readScreenRefresh();   // the window may move to another screen
         // Memory every 10 s, so leaks show up in the log (same number as Activity Monitor's "Memory").
         static int tick;
         if (++tick % 10 == 0) {
@@ -1718,8 +1738,53 @@ __attribute__((constructor)) static void lsfg_unix_init(void) {
         installLayerHook();
         nssInstall();
         startStatsTimer();
+        readScreenRefresh();
         dispatch_async(dispatch_get_main_queue(), ^{ captureInstallHotkey(); });   // once AppKit runs
     }
+}
+
+#pragma mark - Frame cap
+
+// Seconds per frame for the cap, 0 when off. Auto: the display's refresh divided by the frames shown per real frame
+// (frame generation's multiplier when it runs), so real frames arrive on an even cadence that the generated ones fill
+// exactly; 4x on 60 Hz shows 2x, so the multiplier only counts as far as real frames stay at 30 fps or more.
+static double frameCapInterval(void) {
+    int cap = config.fpsCap;
+    if (cap > 0) return 1.0 / cap;
+    if (cap == 0) return 0;
+    // The nominal rate, not the display link's measured one: that drifts (52-58 Hz on a 60 Hz screen while frames
+    // are skipped), and below 60 only one real frame at 30 fps would fit, so the cap jumped to ~55 and back.
+    double refresh = atomic_load(&screenRefresh);
+    if (refresh <= 0) refresh = effectiveRefresh();
+    if (refresh <= 0) return 0;
+    if (NSProcessInfo.processInfo.lowPowerModeEnabled) refresh = MAX(refresh, 1.0 / 60);
+    int shown = atomic_load(&fgOn) && fgAvailable && !lsfgMissing ? config.multiplier : 1;
+    int fit = MAX(1, (int)floor(1.0 / refresh / 30 + 0.25));   // real frames at 30 fps or more
+    return refresh * MIN(shown, fit);
+}
+
+// Called by the PE side on the game's own thread right after its swap chain's Present returns, so the wait sits
+// between frames: the game reads input for its next frame after it, as with a game's own limiter. (Waiting in
+// nextDrawable would run on D3DMetal's queue thread, after the game had already read input and simulated the
+// frame, and back up D3DMetal's queue by a frame or more.) Keeps a steady cadence: a frame that comes in late by
+// less than one interval doesn't move it, so the average holds; one later than that starts it afresh.
+static long frameCapWait(void) {
+    static double next, lastInterval;
+    static mach_timebase_info_data_t timebase;
+    if (!timebase.denom) mach_timebase_info(&timebase);
+    double interval = frameCapInterval();
+    if (fabs(interval - lastInterval) > 0.0002) {
+        if (interval > 0) lsfg_log(@"frame cap %.1f fps%@ (waits after the game's Present)", 1 / interval, config.fpsCap < 0 ? @" (auto)" : @"");
+        else if (lastInterval > 0) lsfg_log(@"frame cap off");
+        lastInterval = interval;
+        next = 0;
+    }
+    if (interval <= 0) return 0;
+    double now = CACurrentMediaTime();
+    if (next == 0 || now - next > interval) { next = now + interval; return 0; }
+    if (now < next) mach_wait_until((uint64_t)(next * 1e9 * timebase.denom / timebase.numer));
+    next += interval;
+    return 0;
 }
 
 #pragma mark - Wine unixlib entry points
@@ -1741,6 +1806,17 @@ static NTSTATUS lsfg_set_exe(void *args) {
     }
     return 0;
 }
+// The PE side's Present hook: wait for the frame cap.
+static NTSTATUS lsfg_frame_wait(void *args) {
+    (void)args;
+    return frameCapWait();
+}
+// A message from the PE side for the log.
+static NTSTATUS lsfg_pe_log(void *args) {
+    const char *message = *(const char **)args;
+    if (message) @autoreleasepool { lsfg_log(@"%s", message); }
+    return 0;
+}
 __attribute__((visibility("default"))) const void *__wine_unix_call_funcs[] = {
-    (const void *)lsfg_ping, (const void *)lsfg_set_exe,
+    (const void *)lsfg_ping, (const void *)lsfg_set_exe, (const void *)lsfg_frame_wait, (const void *)lsfg_pe_log,
 };

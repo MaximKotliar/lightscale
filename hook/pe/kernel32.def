@@ -10,3 +10,8 @@ GetModuleHandleW
 GetModuleFileNameW
 GetProcessHeap
 HeapFree
+CreateThread
+CloseHandle
+Sleep
+VirtualProtect
+GetCurrentThreadId

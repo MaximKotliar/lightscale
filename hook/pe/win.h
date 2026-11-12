@@ -25,3 +25,11 @@ DECLSPEC_IMPORT HMODULE WINAPI GetModuleHandleW(const WCHAR *name);
 DECLSPEC_IMPORT DWORD WINAPI GetModuleFileNameW(HMODULE mod, WCHAR *buf, DWORD size);
 DECLSPEC_IMPORT HANDLE WINAPI GetProcessHeap(void);
 DECLSPEC_IMPORT BOOL WINAPI HeapFree(HANDLE heap, DWORD flags, void *mem);
+typedef struct { unsigned long Data1; unsigned short Data2, Data3; unsigned char Data4[8]; } GUID;
+#define PAGE_READWRITE 0x04
+DECLSPEC_IMPORT HANDLE WINAPI CreateThread(void *attributes, SIZE_T stack, DWORD (WINAPI *start)(void *), void *param,
+                                           DWORD flags, DWORD *id);
+DECLSPEC_IMPORT BOOL WINAPI CloseHandle(HANDLE h);
+DECLSPEC_IMPORT void WINAPI Sleep(DWORD ms);
+DECLSPEC_IMPORT BOOL WINAPI VirtualProtect(void *addr, SIZE_T size, DWORD protect, DWORD *old);
+DECLSPEC_IMPORT DWORD WINAPI GetCurrentThreadId(void);
