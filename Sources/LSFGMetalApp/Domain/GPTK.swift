@@ -14,6 +14,7 @@ struct GPTKVersion: Identifiable, Hashable, Sendable {
 enum GPTKError: LocalizedError {
     case wineRunning
     case notAllowed
+    case notFound(app: String)
     case incomplete(String)
 
     var errorDescription: String? {
@@ -22,6 +23,8 @@ enum GPTKError: LocalizedError {
             "Quit Steam and every game in CrossOver first. They use the current GPTK while they run."
         case .notAllowed:
             "macOS didn't let \(AppName.display) change CrossOver. Allow it in System Settings → Privacy & Security → App Management, then try again."
+        case let .notFound(app):
+            "\(app) has no GPTK folder where \(AppName.display) looks for it. Open an issue saying which CrossOver version you have."
         case let .incomplete(version):
             "GPTK \(version) in this app is incomplete. Rebuild the app."
         }
@@ -42,9 +45,16 @@ enum GPTK {
         return info["CFBundleShortVersionString"] as? String
     }
 
-    static func folder(in crossOver: CrossOverInstall) -> URL { crossOver.root.appending(path: "lib64/apple_gptk") }
+    /// CrossOver's GPTK folder: `lib64/apple_gptk`, or `lib/apple_gptk` in builds without `lib64` (CrossOver Preview,
+    /// which also carries GPTK 3 in `lib/apple_gptk3`; the one in `apple_gptk` is what bottles use by default).
+    static func folder(in crossOver: CrossOverInstall) -> URL? { folder(inRoot: crossOver.root) }
 
-    static func installed(in crossOver: CrossOverInstall) -> String? { version(of: folder(in: crossOver)) }
+    static func folder(inRoot root: URL) -> URL? {
+        ["lib64/apple_gptk", "lib/apple_gptk"].map { root.appending(path: $0) }
+            .first { FileManager.default.fileExists(atPath: $0.appending(path: "external").path) }
+    }
+
+    static func installed(in crossOver: CrossOverInstall) -> String? { folder(in: crossOver).flatMap(version(of:)) }
 
     /// Versions bundled with the app (or in LSFG_GPTK_DIR when run from a checkout).
     static var bundledRoot: URL? {
@@ -78,8 +88,9 @@ enum GPTK {
     /// Replaces CrossOver's GPTK with `target`. The new files are copied next to the old ones
     /// first and swapped in by renaming, so a failed copy leaves CrossOver working.
     static func install(_ target: GPTKVersion, into crossOver: CrossOverInstall, available: [GPTKVersion]) async throws {
+        guard let dst = folder(in: crossOver) else { throw GPTKError.notFound(app: crossOver.app.deletingPathExtension().lastPathComponent) }
         guard !(await isWineRunning()) else { throw GPTKError.wineRunning }
-        try await install(target, at: folder(in: crossOver), available: available, saveTo: savedRoot)
+        try await install(target, at: dst, available: available, saveTo: savedRoot)
     }
 
     /// The switch itself, into CrossOver's `apple_gptk` folder `dst`.

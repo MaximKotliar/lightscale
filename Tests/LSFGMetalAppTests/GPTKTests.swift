@@ -64,3 +64,16 @@ private func tempDir() throws -> URL {
     let json = String(decoding: try JSONEncoder().encode(GameProfile()), as: UTF8.self)
     #expect(!json.contains("gptk"))
 }
+
+@Test func gptkFolderIsFoundInLibWhenThereIsNoLib64() throws {
+    let dir = try tempDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    #expect(GPTK.folder(inRoot: dir) == nil)
+    // CrossOver Preview: lib/apple_gptk (and GPTK 3 in lib/apple_gptk3), no lib64
+    let preview = try makeGPTK("4.0", in: dir.appending(path: "lib"), name: "apple_gptk")
+    _ = try makeGPTK("3.0", in: dir.appending(path: "lib"), name: "apple_gptk3")
+    #expect(GPTK.folder(inRoot: dir)?.standardizedFileURL == preview.standardizedFileURL)
+    // regular CrossOver: lib64/apple_gptk wins
+    let regular = try makeGPTK("3.0", in: dir.appending(path: "lib64"), name: "apple_gptk")
+    #expect(GPTK.folder(inRoot: dir)?.standardizedFileURL == regular.standardizedFileURL)
+}
