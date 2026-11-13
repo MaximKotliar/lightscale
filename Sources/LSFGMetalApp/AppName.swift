@@ -6,9 +6,9 @@ enum AppName {
     static let display = "Lightscale"
     /// ~/Library/Application Support/<folder>, ~/Library/Logs/<folder>.log
     static let folder = "Lightscale"
-    /// Every bundle ID this app has had, newest first. The updater accepts a release under any of them, so a
-    /// copy with an older ID updates to one with the newest (scripts/build-app.sh sets the one a build gets).
-    static let bundleIDs = ["com.maksystems.lightscale", "dev.lightscale.app", "dev.lsfg-metal.setup"]
+    /// Every bundle ID this app has had, the current one first (scripts/build-app.sh sets it). The updater accepts a
+    /// release under any of them. com.maksystems.lightscale: 0.19, withdrawn on the day; its copies update back.
+    static let bundleIDs = ["dev.lightscale.app", "com.maksystems.lightscale", "dev.lsfg-metal.setup"]
     /// Settings the app keeps in UserDefaults, which macOS stores per bundle ID.
     static let settingKeys = ["setupComplete", "bottleFolders"]
 
