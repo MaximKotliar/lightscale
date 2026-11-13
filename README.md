@@ -33,8 +33,7 @@ Lightscale works with 64-bit DirectX games. It leaves out 32-bit games.
 
 1. Download `Lightscale-<version>.zip` from the [latest release](https://github.com/MaximKotliar/lightscale/releases/latest).
 2. Unzip it and move **Lightscale** to your Applications folder.
-3. Open it. Lightscale isn't notarized by Apple, so the first time macOS refuses to open it. Go to **System Settings ›
-   Privacy & Security**, scroll down and click **Open Anyway** next to the message about Lightscale.
+3. Open it. Lightscale is signed and notarized by Apple, so it opens like any other app.
 
 After that, Lightscale updates itself: when a new version comes out, it shows a banner with an **Update** button.
 **Lightscale › Check for Updates…** checks right away.
