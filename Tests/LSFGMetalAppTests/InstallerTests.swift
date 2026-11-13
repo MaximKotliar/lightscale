@@ -163,17 +163,16 @@ import Testing
     #expect(bottle.dlssEnabled)
 }
 
-@Test func hookVersionChangesWithAnyBundledFile() throws {
+@Test func installedHookVersionReadsNumbersAndOlderHashes() throws {
     let dir = FileManager.default.temporaryDirectory.appending(path: "lsfg-hook-\(UUID().uuidString)")
-    try FileManager.default.createDirectory(at: dir.appending(path: "baked"), withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: dir) }
-    try Data("hook".utf8).write(to: dir.appending(path: "lsfghook.so"))
-    try Data("kernel".utf8).write(to: dir.appending(path: "baked/k.bin"))
-    let first = try #require(HookFiles.version(of: dir))
-    #expect(HookFiles.version(of: dir) == first)                        // stable
-    try Data("kernel2".utf8).write(to: dir.appending(path: "baked/k.bin"))
-    let second = try #require(HookFiles.version(of: dir))
-    #expect(second != first)                                            // a file in a subfolder counts
-    try FileManager.default.moveItem(at: dir.appending(path: "baked/k.bin"), to: dir.appending(path: "baked/j.bin"))
-    #expect(HookFiles.version(of: dir) != second)                       // so does a rename
+    let file = dir.appending(path: "hook.version")
+    #expect(HookFiles.installedVersion(in: file) == nil)                 // never installed
+    try Data("3\n".utf8).write(to: file)
+    #expect(HookFiles.installedVersion(in: file) == 3)
+    try Data("d25f7885bdfa03f2".utf8).write(to: file)                   // 0.18's hook
+    #expect(HookFiles.installedVersion(in: file) == 1)
+    try Data("ceb1c109fe3f1e2c".utf8).write(to: file)                   // 0.16's: older than version 1
+    #expect(HookFiles.installedVersion(in: file) == nil)
 }

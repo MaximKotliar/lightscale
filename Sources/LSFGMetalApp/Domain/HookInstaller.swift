@@ -64,28 +64,19 @@ enum HookFiles {
     }
     static var builtinDir: URL { root.appending(path: "wine/x86_64-windows") }
 
-    /// The installed hook's version: written on every install, so an app update can tell its games use an older hook.
+    /// The hook's version. Raise it when an update changes what games run: anything under hook/, the LSFG and
+    /// Lossless Scaling bridges, the baked kernels, NSS's kernels or weights, the proxies. Games then show
+    /// "older hook" with an Update button; app updates that leave it alone don't ask.
+    static let version = 1
+    /// What each install writes (`version`), so an app update can tell its games use an older hook.
     static var versionFile: URL { root.appending(path: "hook.version") }
-    static var installedVersion: String? {
-        (try? String(contentsOf: versionFile, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    /// The bundled hook's version: a SHA-256 of every file the app installs from (names and contents), so any change
-    /// to the hook, its bridges, kernels or weights counts. About 20 MB; hash it off the main thread.
-    static func version(of source: URL) -> String? {
-        let fm = FileManager.default
-        guard let walker = fm.enumerator(at: source, includingPropertiesForKeys: [.isRegularFileKey]) else { return nil }
-        var files: [String] = []
-        for case let url as URL in walker where (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true {
-            files.append(String(url.standardizedFileURL.path.dropFirst(source.standardizedFileURL.path.count)))
-        }
-        var hash = SHA256()
-        for file in files.sorted() {
-            guard let data = try? Data(contentsOf: source.appending(path: file), options: .mappedIfSafe) else { return nil }
-            hash.update(data: Data(file.utf8))
-            hash.update(data: data)
-        }
-        return hash.finalize().prefix(8).map { String(format: "%02x", $0) }.joined()
+    /// Before the number, installs wrote a hash of the bundled files. These are the releases whose hook is version 1.
+    static let version1Hashes: Set<String> = ["a9a643f20c70a33f", "d25f7885bdfa03f2"]   // 0.17, 0.18
+    static var installedVersion: Int? { installedVersion(in: versionFile) }
+    static func installedVersion(in file: URL) -> Int? {
+        guard let text = (try? String(contentsOf: file, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
+        else { return nil }
+        return Int(text) ?? (version1Hashes.contains(text) ? 1 : nil)   // an older hash: older than any number
     }
 
     /// Our proxies load "lsfghook.dll" (stored as UTF-16), which identifies them among other mods' DLLs.
@@ -157,7 +148,7 @@ enum HookInstaller {
         try replace(game.folder.appending(path: proxy.fileName), with: source.appending(path: proxy.fileName))
         try await crossOver.reg(["add", overrideKey(game), "/v", proxy.rawValue, "/d", "native,builtin", "/f"], in: game.bottle)
         if movesOptiScaler, OptiScaler.freeName(in: game) != nil { try await OptiScaler.install(game, crossOver: crossOver) }
-        if let version = HookFiles.version(of: source) { try version.write(to: HookFiles.versionFile, atomically: true, encoding: .utf8) }
+        try String(HookFiles.version).write(to: HookFiles.versionFile, atomically: true, encoding: .utf8)
     }
 
     /// Removes the game's proxy and override. The bottle setup (LibPath, placeholder) goes too

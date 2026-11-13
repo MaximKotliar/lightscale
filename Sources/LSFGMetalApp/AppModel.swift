@@ -27,8 +27,6 @@ final class AppModel {
     /// Hooked games run an older hook than this app ships (it was updated since they were installed).
     private(set) var hookUpdateAvailable = false
     private(set) var isUpdatingHook = false
-    /// The bundled hook's version, hashed once per launch.
-    private var bundledHookVersion: String?
     var selection: Game.ID?
     /// Game Mode and the cursor fix while a hooked game runs.
     let playSession = PlaySession()
@@ -100,11 +98,7 @@ final class AppModel {
     }
 
     private func checkHookVersion() async {
-        if bundledHookVersion == nil, let source = HookFiles.source {
-            bundledHookVersion = await Task.detached(priority: .utility) { HookFiles.version(of: source) }.value
-        }
-        guard let bundled = bundledHookVersion else { hookUpdateAvailable = false; return }
-        hookUpdateAvailable = games.contains { $0.isInstalled } && HookFiles.installedVersion != bundled
+        hookUpdateAvailable = games.contains { $0.isInstalled } && (HookFiles.installedVersion ?? 0) < HookFiles.version
     }
 
     // MARK: App updates
