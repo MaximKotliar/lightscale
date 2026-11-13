@@ -71,7 +71,7 @@ enum HookFiles {
     /// What each install writes (`version`), so an app update can tell its games use an older hook.
     static var versionFile: URL { root.appending(path: "hook.version") }
     /// Before the number, installs wrote a hash of the bundled files. These are the releases whose hook is version 1.
-    static let version1Hashes: Set<String> = ["a9a643f20c70a33f", "d25f7885bdfa03f2"]   // 0.17, 0.18
+    static let version1Hashes: Set<String> = ["a9a643f20c70a33f", "d25f7885bdfa03f2", "5dc4f4d48af5a365"]   // 0.17, 0.18, 0.19
     static var installedVersion: Int? { installedVersion(in: versionFile) }
     static func installedVersion(in file: URL) -> Int? {
         guard let text = (try? String(contentsOf: file, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
