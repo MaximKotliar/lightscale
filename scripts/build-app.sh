@@ -4,7 +4,7 @@
 # Needs: Xcode, Homebrew llvm + lld (for the hook's Windows DLLs). See hook/build.sh.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-NAME=Lightscale BUNDLE_ID=dev.lightscale.app   # the name also lives in Sources/LSFGMetalApp/AppName.swift
+NAME=Lightscale BUNDLE_ID=com.maksystems.lightscale   # also first in AppName.bundleIDs; the name lives in Sources/LSFGMetalApp/AppName.swift
 APP="$ROOT/build/$NAME.app"
 rm -rf "$ROOT/build/LSFG Metal.app"   # this build under its old name
 
