@@ -67,7 +67,7 @@ enum HookFiles {
     /// The hook's version. Raise it when an update changes what games run: anything under hook/, the LSFG and
     /// Lossless Scaling bridges, the baked kernels, NSS's kernels or weights, the proxies. Games then show
     /// "older hook" with an Update button; app updates that leave it alone don't ask.
-    static let version = 1
+    static let version = 2
     /// What each install writes (`version`), so an app update can tell its games use an older hook.
     static var versionFile: URL { root.appending(path: "hook.version") }
     /// Before the number, installs wrote a hash of the bundled files. These are the releases whose hook is version 1.

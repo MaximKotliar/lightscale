@@ -52,11 +52,15 @@ static void logLine(const char *message) {
 #pragma mark - Frame cap: the swap chain's Present
 
 // The frame cap waits on the game's own thread right after its Present returns (the native side's frameCapWait),
-// so the game reads input for the next frame after the wait. Present is reached through COM vtables: the hook
-// replaces entries in the vtables of DXGI's factory (swap chain creation) and of each swap chain it creates (Present,
-// Present1). Vtables live in dxgi.dll, so nothing in the game's own code changes (FromSoft's anti-tamper checks it).
+// so the game reads input for the next frame after the wait. Present is reached through COM vtables: the hook takes
+// over DXGI's factory (swap chain creation) and each swap chain it creates (Present, Present1). Everything it changes
+// lives in dxgi.dll, so nothing in the game's own code changes (FromSoft's anti-tamper checks it).
+//
+// Steam's overlay shares these: it wraps the factory and patches the code of the swap chain's Present stub. It stops
+// drawing when DXGI's factory vtable has been patched, so the hook leaves vtables alone where it can (below).
 
 typedef long (WINAPI *QueryInterfaceFn)(void *self, const GUID *iid, void **out);
+typedef unsigned long (WINAPI *AddRefFn)(void *self);
 typedef unsigned long (WINAPI *ReleaseFn)(void *self);
 typedef long (WINAPI *CreateFactoryFn)(const GUID *iid, void **out);
 typedef long (WINAPI *CreateFactory2Fn)(unsigned flags, const GUID *iid, void **out);
@@ -69,33 +73,52 @@ typedef long (WINAPI *CreateForCoreWindowFn)(void *self, void *device, void *win
 typedef long (WINAPI *CreateForCompositionFn)(void *self, void *device, const void *desc, void *output, void **out);
 
 // vtable slots (IUnknown, IDXGIObject, then each interface's methods in declaration order)
-enum { kQueryInterface = 0, kRelease = 2, kCreateSwapChain = 10, kCreateForHwnd = 15, kCreateForCoreWindow = 16,
+enum { kQueryInterface = 0, kAddRef = 1, kRelease = 2, kCreateSwapChain = 10, kCreateForHwnd = 15, kCreateForCoreWindow = 16,
        kCreateForComposition = 24, kPresent = 8, kPresent1 = 22 };
 
-// The original method for each patched vtable, per slot.
+// The original method for each hooked entry. A vtable entry in D3DMetal's dxgi.dll is a 16-byte stub,
+// `66 90 ff 25 00 00 00 00` and the address it jumps to: the hook replaces that address and leaves the vtable alone.
+// An entry that isn't such a stub (one Steam's overlay has patched already, or another GPTK's) gets its vtable slot
+// patched instead, which then calls the patched stub. Keyed by the stub, or by the vtable for a slot patch.
 enum { kMaxTables = 16 };
-typedef struct { void **vtable[kMaxTables]; void *original[kMaxTables]; volatile long count; } Originals;
+typedef struct { const void *key[kMaxTables]; void *original[kMaxTables]; volatile long count; } Originals;
 static Originals origCreateSwapChain, origForHwnd, origForCoreWindow, origForComposition, origPresent, origPresent1;
 
-static void *originalFor(Originals *o, void *self) {
-    void **vtable = *(void ***)self;
-    for (long i = 0; i < o->count; i++) if (o->vtable[i] == vtable) return o->original[i];
+static void **vtableOf(void *object) { return *(void ***)object; }
+
+static void *originalFor(Originals *o, void *self, int slot) {
+    void **vtable = vtableOf(self);
+    const void *entry = vtable[slot];
+    long count = __atomic_load_n(&o->count, __ATOMIC_ACQUIRE);
+    for (long i = 0; i < count; i++) if (o->key[i] == entry || o->key[i] == vtable) return o->original[i];
     return 0;
 }
 
-static void patch(void **vtable, int slot, void *hook, Originals *o) {
-    if (vtable[slot] == hook || o->count >= kMaxTables) return;
-    for (long i = 0; i < o->count; i++) if (o->vtable[i] == vtable) return;
-    o->vtable[o->count] = vtable;
-    o->original[o->count] = vtable[slot];
-    __atomic_store_n(&o->count, o->count + 1, __ATOMIC_RELEASE);   // recorded before the hook can be called
-    DWORD old;
-    if (!VirtualProtect(&vtable[slot], sizeof(void *), PAGE_READWRITE, &old)) return;
-    __atomic_store_n(&vtable[slot], hook, __ATOMIC_RELEASE);
-    VirtualProtect(&vtable[slot], sizeof(void *), old, &old);
+// The address a dxgi.dll stub jumps to, or 0 when `entry` isn't one.
+static void **stubTarget(unsigned char *entry) {
+    static const unsigned char stub[8] = {0x66, 0x90, 0xff, 0x25, 0, 0, 0, 0};
+    for (int i = 0; i < 8; i++) if (entry[i] != stub[i]) return 0;
+    return (void **)(entry + 8);
 }
 
-static void **vtableOf(void *object) { return *(void ***)object; }
+static void writePointer(void **at, void *value) {
+    DWORD old;
+    if (!VirtualProtect(at, sizeof(void *), PAGE_READWRITE, &old)) return;
+    __atomic_store_n(at, value, __ATOMIC_RELEASE);
+    VirtualProtect(at, sizeof(void *), old, &old);
+}
+
+static void patch(void **vtable, int slot, void *hook, Originals *o) {
+    void *entry = vtable[slot];
+    if (entry == hook || o->count >= kMaxTables) return;
+    for (long i = 0; i < o->count; i++) if (o->key[i] == entry || o->key[i] == vtable) return;   // done already
+    void **target = stubTarget(entry);
+    if (target && *target == hook) return;
+    o->key[o->count] = target ? entry : (void *)vtable;
+    o->original[o->count] = target ? *target : entry;
+    __atomic_store_n(&o->count, o->count + 1, __ATOMIC_RELEASE);   // recorded before the hook can be called
+    writePointer(target ? target : &vtable[slot], hook);
+}
 
 // Calls fn for the object's interface pointer behind each IID it supports (one object can have several vtables).
 static void forEachInterface(void *object, const GUID *iids, int count, void (*fn)(void *interface, int index)) {
@@ -138,7 +161,7 @@ static void afterPresent(unsigned flags) {
 }
 
 static long WINAPI hookPresent(void *self, unsigned sync, unsigned flags) {
-    PresentFn original = (PresentFn)originalFor(&origPresent, self);
+    PresentFn original = (PresentFn)originalFor(&origPresent, self, kPresent);
     if (!original) return 0x887A0001;   // DXGI_ERROR_INVALID_CALL; can't happen: only patched vtables reach here
     DWORD me = GetCurrentThreadId();
     int outer = presentingThread != me;
@@ -149,7 +172,7 @@ static long WINAPI hookPresent(void *self, unsigned sync, unsigned flags) {
 }
 
 static long WINAPI hookPresent1(void *self, unsigned sync, unsigned flags, const void *params) {
-    Present1Fn original = (Present1Fn)originalFor(&origPresent1, self);
+    Present1Fn original = (Present1Fn)originalFor(&origPresent1, self, kPresent1);
     if (!original) return 0x887A0001;
     DWORD me = GetCurrentThreadId();
     int outer = presentingThread != me;
@@ -164,31 +187,58 @@ static void patchSwapChainInterface(void *interface, int index) {
     if (index >= 1) patch(vtableOf(interface), kPresent1, (void *)hookPresent1, &origPresent1);
 }
 
-static void hookSwapChain(void *swapChain) {
+// Steam's overlay hooks a new swap chain once its creation returns to it: hook a moment later, from another
+// thread, so Steam patches DXGI's own Present stub and the hook goes in front of it.
+static DWORD WINAPI hookSwapChainLater(void *swapChain) {
     static int logged;
-    if (!swapChain) return;
+    Sleep(1000);
     forEachInterface(swapChain, swapChainIIDs, sizeof swapChainIIDs / sizeof *swapChainIIDs, patchSwapChainInterface);
-    if (!logged) { logged = 1; logLine("swap chain created: Present hooked for the frame cap"); }
+    ((ReleaseFn)vtableOf(swapChain)[kRelease])(swapChain);
+    if (!logged) {
+        logged = 1;
+        // which way Present was hooked, and the first bytes of the entry the vtable holds
+        static const char digits[] = "0123456789abcdef";
+        char line[160];
+        int n = 0;
+        for (const char *t = "swap chain created: Present hooked for the frame cap, "; *t; t++) line[n++] = *t;
+        const char *how = !origPresent.count ? "not hooked" : origPresent.key[0] == (void *)vtableOf(swapChain)
+                                                                 ? "vtable slot" : "DXGI's stub";
+        while (*how) line[n++] = *how++;
+        const unsigned char *entry = vtableOf(swapChain)[kPresent];
+        for (const char *t = ", entry"; *t; t++) line[n++] = *t;
+        for (int i = 0; i < 8; i++) { line[n++] = ' '; line[n++] = digits[entry[i] >> 4]; line[n++] = digits[entry[i] & 15]; }
+        line[n] = 0;
+        logLine(line);
+    }
+    return 0;
+}
+
+static void hookSwapChain(void *swapChain) {
+    if (!swapChain) return;
+    ((AddRefFn)vtableOf(swapChain)[kAddRef])(swapChain);   // kept alive until it's hooked
+    HANDLE thread = CreateThread(0, 0, hookSwapChainLater, swapChain, 0, 0);
+    if (thread) CloseHandle(thread);
+    else ((ReleaseFn)vtableOf(swapChain)[kRelease])(swapChain);
 }
 
 static long WINAPI hookCreateSwapChain(void *self, void *device, void *desc, void **out) {
-    long result = ((CreateSwapChainFn)originalFor(&origCreateSwapChain, self))(self, device, desc, out);
+    long result = ((CreateSwapChainFn)originalFor(&origCreateSwapChain, self, kCreateSwapChain))(self, device, desc, out);
     if (result >= 0 && out) hookSwapChain(*out);
     return result;
 }
 static long WINAPI hookCreateForHwnd(void *self, void *device, void *hwnd, const void *desc, const void *fullscreen,
                                      void *output, void **out) {
-    long result = ((CreateForHwndFn)originalFor(&origForHwnd, self))(self, device, hwnd, desc, fullscreen, output, out);
+    long result = ((CreateForHwndFn)originalFor(&origForHwnd, self, kCreateForHwnd))(self, device, hwnd, desc, fullscreen, output, out);
     if (result >= 0 && out) hookSwapChain(*out);
     return result;
 }
 static long WINAPI hookCreateForCoreWindow(void *self, void *device, void *window, const void *desc, void *output, void **out) {
-    long result = ((CreateForCoreWindowFn)originalFor(&origForCoreWindow, self))(self, device, window, desc, output, out);
+    long result = ((CreateForCoreWindowFn)originalFor(&origForCoreWindow, self, kCreateForCoreWindow))(self, device, window, desc, output, out);
     if (result >= 0 && out) hookSwapChain(*out);
     return result;
 }
 static long WINAPI hookCreateForComposition(void *self, void *device, const void *desc, void *output, void **out) {
-    long result = ((CreateForCompositionFn)originalFor(&origForComposition, self))(self, device, desc, output, out);
+    long result = ((CreateForCompositionFn)originalFor(&origForComposition, self, kCreateForComposition))(self, device, desc, output, out);
     if (result >= 0 && out) hookSwapChain(*out);
     return result;
 }
