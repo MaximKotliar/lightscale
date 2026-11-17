@@ -176,3 +176,19 @@ import Testing
     try Data("ceb1c109fe3f1e2c".utf8).write(to: file)                   // 0.16's: older than version 1
     #expect(HookFiles.installedVersion(in: file) == nil)
 }
+
+@Test func gamesReachedTwiceAreListedOnce() throws {
+    // Crash in 0.21: the same game through two paths gave two games with one id.
+    let fm = FileManager.default
+    let root = fm.temporaryDirectory.appending(path: "lsfg-dupes-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: root) }
+    let folder = root.appending(path: "Game")
+    try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+    try Data().write(to: folder.appending(path: "game.exe"))
+    try fm.createSymbolicLink(at: root.appending(path: "Link"), withDestinationURL: folder)
+    let bottle = Bottle(url: root)
+    let games = [folder.appending(path: "game.exe"), root.appending(path: "Link/game.exe"),
+                 root.appending(path: "GAME/game.exe"), folder.appending(path: "game.exe")]
+        .map { Game(name: "Game", bottle: bottle, exe: $0, status: .blocked("test")) }
+    #expect(GameScanner.unique(games).count == 1)
+}

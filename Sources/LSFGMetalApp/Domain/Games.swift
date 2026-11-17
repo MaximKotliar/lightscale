@@ -84,7 +84,12 @@ enum GameScanner {
         await withTaskGroup(of: [Game].self) { group in
             for bottle in bottles {
                 group.addTask {
-                    LosslessLocator.steamLibraries(in: bottle.url).flatMap { library in
+                    // A library listed twice (a symlink, another drive letter or a different case for the same
+                    // folder) is scanned once.
+                    var seenLibraries = Set<String>()
+                    return LosslessLocator.steamLibraries(in: bottle.url)
+                        .filter { seenLibraries.insert($0.resolvingSymlinksInPath().path.lowercased()).inserted }
+                        .flatMap { library in
                         let common = library.appending(path: "common")
                         let folders = (try? FileManager.default.contentsOfDirectory(at: common, includingPropertiesForKeys: nil)) ?? []
                         return folders.filter { !notGames.contains($0.lastPathComponent) }
@@ -96,8 +101,14 @@ enum GameScanner {
             }
             var all: [Game] = []
             for await games in group { all += games }
-            return all.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            return unique(all).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         }
+    }
+
+    /// Each game once: the same exe reached through two paths (a symlink, a different case) counts once.
+    static func unique(_ games: [Game]) -> [Game] {
+        var seen = Set<String>()
+        return games.filter { seen.insert($0.exe.resolvingSymlinksInPath().path.lowercased()).inserted }
     }
 
     /// The main executable of the game folder: the one the user chose, else the .exe named most like

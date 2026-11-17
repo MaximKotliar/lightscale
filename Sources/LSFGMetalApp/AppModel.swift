@@ -68,7 +68,7 @@ final class AppModel {
                 game.isCustom = true
                 return game
             }
-        games = (scanned + custom).sorted(by: Self.order)
+        games = GameScanner.unique(scanned + custom).sorted(by: Self.order)
         exeChoices = [:]
         // Lightscale's OptiScaler under a name the game doesn't load (0.14 and earlier) never ran: move it to one it
         // does. The misplaced copy was never loaded, so this is safe even while the game runs.
@@ -85,9 +85,9 @@ final class AppModel {
             }
         }
         fsrPathGames = Set(games.filter { OptiScaler.installedName(in: $0) != nil }.map(\.exe))
-        folderProfiles = Dictionary(uniqueKeysWithValues: games.compactMap { game in
+        folderProfiles = Dictionary(games.compactMap { game in
             GameFolderProfile.load(for: game).map { (game.id, $0) }
-        })
+        }, uniquingKeysWith: { first, _ in first })
         // Move settings older versions kept in profiles.json (by .exe name) into the game folders.
         for game in games where folderProfiles[game.id] == nil
             && ProfileFile.keys(for: game).contains(where: { profiles.games[$0] != nil }) {
