@@ -77,3 +77,30 @@ private func tempDir() throws -> URL {
     let regular = try makeGPTK("3.0", in: dir.appending(path: "lib64"), name: "apple_gptk")
     #expect(GPTK.folder(inRoot: dir)?.standardizedFileURL == regular.standardizedFileURL)
 }
+
+@Test func nvngxCopyIsTurnedBackIntoALink() throws {
+    let dir = try tempDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let fm = FileManager.default
+    let gptk = try makeGPTK("4.0b3", in: dir)
+    let unix = gptk.appending(path: "wine/x86_64-unix")
+    try fm.createDirectory(at: unix, withIntermediateDirectories: true)
+    let target = "../../external/libd3dshared.dylib"
+    try fm.createSymbolicLink(atPath: unix.appending(path: "nvngx-on-metalfx.so").path, withDestinationPath: target)
+    try Data("copy of libd3dshared".utf8).write(to: unix.appending(path: "nvngx.so"))   // what 0.2-0.23 shipped
+
+    #expect(try GPTK.repairLinks(in: gptk))
+    #expect(try fm.destinationOfSymbolicLink(atPath: unix.appending(path: "nvngx.so").path) == target)
+    #expect(try !GPTK.repairLinks(in: gptk))   // already a link: nothing to do
+}
+
+@Test func gptkWithoutMetalFXNvngxIsLeftAlone() throws {
+    let dir = try tempDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let gptk = try makeGPTK("3.0", in: dir)
+    let unix = gptk.appending(path: "wine/x86_64-unix")
+    try FileManager.default.createDirectory(at: unix, withIntermediateDirectories: true)
+    try Data("gptk 3 nvngx".utf8).write(to: unix.appending(path: "nvngx.so"))
+    #expect(try !GPTK.repairLinks(in: gptk))
+    #expect((try? FileManager.default.destinationOfSymbolicLink(atPath: unix.appending(path: "nvngx.so").path)) == nil)
+}

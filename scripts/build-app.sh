@@ -66,13 +66,18 @@ for src in ${GPTK_DIRS[@]+"${GPTK_DIRS[@]}"}; do
     ditto "$src/external" "$dst/external"
     ditto "$src/wine" "$dst/wine"
     # GPTK 4 ships DLSS as nvngx-on-metalfx, but CrossOver redirects games' nvngx.dll to the copy
-    # named nvngx (an older nvngx crashes with a newer D3DMetal).
-    for ext in x86_64-windows/nvngx%s.dll x86_64-unix/nvngx%s.so; do
-        from="$dst/wine/$(printf "$ext" -on-metalfx)" to="$dst/wine/$(printf "$ext" "")"
-        if [ -f "$from" ]; then cp "$from" "$to"; fi
-    done
+    # named nvngx (an older nvngx crashes with a newer D3DMetal). The .so is linked below.
+    from="$dst/wine/x86_64-windows/nvngx-on-metalfx.dll"
+    if [ -f "$from" ]; then cp "$from" "$dst/wine/x86_64-windows/nvngx.dll"; fi
     [ -f "$(dirname "$src")/License.rtf" ] && cp "$(dirname "$src")/License.rtf" "$dst/"
     echo "GPTK $v included"
+done
+# nvngx.so must be a symlink like the other Wine modules (to external/libd3dshared.dylib): a real copy gets loaded
+# as libd3dshared from wine/x86_64-unix, which then can't find D3DMetal and every D3D12 game stops. Also repairs a
+# GPTK reused from a release that bundled the copy (0.2-0.23).
+for unix in "$APP"/Contents/Resources/GPTK/*/wine/x86_64-unix; do
+    [ -L "$unix/nvngx-on-metalfx.so" ] || continue
+    ln -sfn "$(readlink "$unix/nvngx-on-metalfx.so")" "$unix/nvngx.so"
 done
 # App icon, drawn by scripts/make-icon.swift.
 ICONSET="$ROOT/build/AppIcon.iconset"

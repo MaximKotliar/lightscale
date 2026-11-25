@@ -124,6 +124,30 @@ enum GPTK {
             try fm.moveItem(at: dst.appending(path: ".lsfg-new-\(part)"), to: live)
             try? fm.removeItem(at: old)
         }
+        try repairLinks(in: dst)   // older app bundles carry nvngx.so as a copy
+    }
+
+    /// GPTK 4's Wine modules are symlinks to `external/libd3dshared.dylib`, which finds D3DMetal next to itself
+    /// (`@loader_path`). Lightscale 0.2–0.23 bundled `nvngx.so` (DLSS under the name CrossOver redirects to) as a
+    /// real copy instead of a link. Once that copy is loaded, dyld takes it for libd3dshared and looks for D3DMetal
+    /// in `wine/x86_64-unix`, so every D3D12 game stops with "Failed to dlopen D3DMetal". This turns the copy back
+    /// into a link to where `nvngx-on-metalfx.so` points. Returns true when it changed something.
+    @discardableResult
+    static func repairLinks(in folder: URL) throws -> Bool {
+        let fm = FileManager.default
+        let unix = folder.appending(path: "wine/x86_64-unix")
+        let copy = unix.appending(path: "nvngx.so")
+        guard let target = try? fm.destinationOfSymbolicLink(atPath: unix.appending(path: "nvngx-on-metalfx.so").path),
+              (try? fm.attributesOfItem(atPath: copy.path))?[.type] as? FileAttributeType == .typeRegular else { return false }
+        try fm.removeItem(at: copy)
+        try fm.createSymbolicLink(atPath: copy.path, withDestinationPath: target)
+        return true
+    }
+
+    /// Repairs CrossOver's GPTK (see `repairLinks`), if it needs it and macOS lets the app write there.
+    static func repairInstalled(in crossOver: CrossOverInstall) {
+        guard let folder = folder(in: crossOver) else { return }
+        _ = try? repairLinks(in: folder)
     }
 
     /// ditto keeps Apple's code signatures and extended attributes intact.

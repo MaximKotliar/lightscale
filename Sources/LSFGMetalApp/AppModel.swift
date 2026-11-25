@@ -317,6 +317,7 @@ final class AppModel {
     // MARK: GPTK
 
     private func refreshGPTK() {
+        status.crossOver.map(GPTK.repairInstalled(in:))
         gptkVersions = GPTK.available()
         installedGPTK = status.crossOver.flatMap(GPTK.installed(in:))
     }
