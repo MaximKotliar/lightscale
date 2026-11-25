@@ -234,7 +234,7 @@ static void addGpuSpan(CFTimeInterval start, CFTimeInterval end) {
     if (end > busyEnd) { busySeconds += end - MAX(start, busyEnd); busyTotal += end - MAX(start, busyEnd); busyEnd = end; }
     os_unfair_lock_unlock(&busyLock);
 }
-static _Atomic long slotWaitUs, frameGpuUs, frameGpuCount, linkGpuUs, linkGpuCount, queueAheadUs, queueAheadCount;
+static _Atomic long slotWaitUs, frameGpuUs, frameGpuCount, encodeCpuNs, encodeCount, linkGpuUs, linkGpuCount, queueAheadUs, queueAheadCount;
 // Running totals for the HUD's frame-cost graph (nanoseconds), never reset.
 static _Atomic long totalSettingsChanges;
 static _Atomic long totalGameFrames, totalLsfgNs, totalLsfgFrames, totalUpscaleNs, totalUpscaleFrames, totalDisplayNs, totalDisplayPasses;
@@ -1153,7 +1153,14 @@ static void fgEncode(id<MTLCommandBuffer> cb, id<MTLTexture> target, void (^targ
     [blit endEncoding];
     captureEncode(kCaptureGame, cb, target, fgLayer.colorspace);   // reference frames, on request (lsfg_capture.m)
     if (targetRead) targetRead(cb);
-    int generated = fgRunLSFG ? bridge.encode(fgContext, (__bridge const void *)cb) : 0;
+    int generated = 0;
+    if (fgRunLSFG) {
+        // CPU the game's present thread spends encoding LSFG (wall time, reported in the timing line).
+        const uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+        generated = bridge.encode(fgContext, (__bridge const void *)cb);
+        atomic_fetch_add(&encodeCpuNs, (long)(clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0));
+        atomic_fetch_add(&encodeCount, 1);
+    }
     if (priming) generated = 0;
     if (!capture) return;
 
@@ -1665,11 +1672,13 @@ static void startStatsTimer(void) {
         long ln = atomic_exchange(&linkGpuCount, 0), lu = atomic_exchange(&linkGpuUs, 0);
         long qn = atomic_exchange(&queueAheadCount, 0), qu = atomic_exchange(&queueAheadUs, 0);
         long wu = atomic_exchange(&slotWaitUs, 0);
+        long en = atomic_exchange(&encodeCount, 0), ens = atomic_exchange(&encodeCpuNs, 0);
         os_unfair_lock_lock(&busyLock);
         double busy = busySeconds; busySeconds = 0;
         os_unfair_lock_unlock(&busyLock);
         if (fn) lsfg_log(@"timing: game waits %.1f ms/s for a slot, frame GPU %.2f ms (game's last pass + LSFG), "
-                         @"present GPU %.2f ms, queued %.1f ms ahead, buffer %.1f ms, GPU busy %.0f%%", wu / 1000.0, fu / 1000.0 / fn,
+                         @"LSFG encode CPU %.3f ms, present GPU %.2f ms, queued %.1f ms ahead, buffer %.1f ms, GPU busy %.0f%%",
+                         wu / 1000.0, fu / 1000.0 / fn, en ? ens / 1e6 / en : 0.0,
                          ln ? lu / 1000.0 / ln : 0.0, qn ? qu / 1000.0 / qn : 0.0, adaptiveBuffer * 1000, busy * 100);
         else if (busy > 0) lsfg_log(@"timing: GPU busy %.0f%% (frame generation idle)", busy * 100);
         if (config.hud) {
